@@ -77,9 +77,8 @@ export async function main() {
 
         conversationId = await run(messagesForChat,{
             chatId,
-            appendPrompt,
             conversationId,
-            listenContinue 
+            listenContinue
         })
     }
 }

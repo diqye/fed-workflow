@@ -68,7 +68,8 @@ export function formatMessages(messages: LarkMessage[]): string {
     const time = new Date(Number(msg.create_time)).toLocaleString("zh-CN")
     const chatType = msg.chat_type === "p2p" ? "私聊" : "群聊"
     const content = tryParseContent(msg.content, msg.mentions)
-    return `### ${i + 1}. [${time}] ${chatType}(${msg.chat_id})
+    return `### ${i + 1}. [${time}] ${chatType}
+- **message_id**: \`${msg.message_id}\`
 - **发送者**: \`${sender}\`
 - **内容**: ${content}`
   })
@@ -135,21 +136,31 @@ export async function fetchUserDetail(openId: string): Promise<string> {
 }
 
 /**
- * 向飞书群/用户发送消息，支持 @人
+ * 向飞书群/用户发送消息，支持 @人 和回复
  * @param chatId 群组 chat_id
  * @param text 文本内容
  * @param mentionOpenIds 要 @ 的用户 open_id 列表（会突破静音通知）
+ * @param replyMessageId 回复某条消息的 message_id，不传则发新消息
  */
-export async function sendMessage(chatId: string, text: string, mentionOpenIds: string[] = []): Promise<string> {
+export async function sendMessage(chatId: string, text: string, mentionOpenIds: string[] = [], replyMessageId?: string): Promise<string> {
   const content = buildPostContent(text, mentionOpenIds)
   const body = {
-    receive_id: chatId,
     msg_type: "post",
     content: JSON.stringify(content),
   }
+
+  if (replyMessageId) {
+    // 回复消息
+    const raw = await larkApi("POST", `/open-apis/im/v1/messages/${replyMessageId}/reply`, {
+      data: JSON.stringify(body),
+    })
+    return raw
+  }
+
+  // 发送新消息
   const raw = await larkApi("POST", "/open-apis/im/v1/messages", {
     params: { receive_id_type: "chat_id" },
-    data: JSON.stringify(body),
+    data: JSON.stringify({ receive_id: chatId, ...body }),
   })
   return raw
 }
