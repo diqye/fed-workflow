@@ -1,6 +1,6 @@
 import { run } from "./agent";
 import { debounceMessages, fetchChatList, fetchChatRaw, createUserCache } from "./lark";
-import { initLog } from "./log";
+import { initLog, Log } from "./log";
 import { loadConfig, saveConfig, updateProject, type Config, type ProjectConfig } from "./config";
 import { parseArgs } from "util"
 import { existsSync } from "fs"
@@ -80,7 +80,7 @@ export async function main() {
 
     // 日志
     if(config.log) {
-        initLog(config.log)
+        await initLog(config.log)
     }
 
     // 自动填充缺失的 groupName / description
@@ -123,6 +123,9 @@ export async function main() {
 
         state.running = true
         const chatDetail = buildChatDetail(project)
+        const log = Log.scope(chatId)
+
+        log.info("startRun, msgs:", String(runMsgs.length), "conversationId:", project.conversationId ?? "null")
 
         try {
             const sessionId = await run(runMsgs, {
@@ -138,9 +141,10 @@ export async function main() {
                 await updateProject(configPath, config, chatId, { conversationId: sessionId })
             }
         } catch(e) {
-            console.error(`[queue] chatId=${chatId} error:`, e)
+            log.error("startRun error:", String(e))
         } finally {
             state.running = false
+            log.info("run completed, pending:", String(state.pending.length))
             // run 完成后如果又有新消息积累，继续执行
             if(state.pending.length > 0) {
                 startRun(chatId, state)

@@ -193,14 +193,16 @@ export async function sendMessage(chatId: string, text: string, mentionOpenIds: 
     const raw = await larkApi("POST", `/open-apis/im/v1/messages/${replyMessageId}/reply`, {
       data: JSON.stringify(body),
     })
-    return raw
+    const { data } = JSON.parse(raw)
+    return `已回复消息 ${data.message_id}`
   }
 
   const raw = await larkApi("POST", "/open-apis/im/v1/messages", {
     params: { receive_id_type: "chat_id" },
     data: JSON.stringify({ receive_id: chatId, ...body }),
   })
-  return raw
+  const { data } = JSON.parse(raw)
+  return `已发送消息 ${data.message_id}`
 }
 
 function buildPostContent(text: string, mentionOpenIds: string[]) {

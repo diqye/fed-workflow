@@ -1,10 +1,13 @@
 import { isAbsolute, join } from "path"
+import { writeFile } from "fs/promises"
 import { LOG_LEVEL } from "./const"
 
 let logPath = ""
 
-export function initLog(path: string) {
+export async function initLog(path: string) {
     logPath = isAbsolute(path) ? path : join(process.cwd(), path)
+    // 启动时清空日志文件
+    await writeFile(logPath, "")
 }
 
 function createLogStream() {
