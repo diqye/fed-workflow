@@ -58,30 +58,34 @@ export async function* listenLarkMessages() {
   await proc.exited;
 }
 
+export type UserCache = { getName(openId: string): Promise<string> }
+
 /**
  * 将消息列表美化为 markdown
  */
-export function formatMessages(messages: LarkMessage[]): string {
-  const lines = messages.map((m, i) => {
+export async function formatMessages(messages: LarkMessage[], userCache: UserCache): Promise<string> {
+  const lines = await Promise.all(messages.map(async (m, i) => {
     const msg = m.event.message
-    const sender = m.event.sender.sender_id.open_id
+    const openId = m.event.sender.sender_id.open_id
+    const name = await userCache.getName(openId)
     const time = new Date(Number(msg.create_time)).toLocaleString("zh-CN")
     const chatType = msg.chat_type === "p2p" ? "私聊" : "群聊"
     const content = tryParseContent(msg.content, msg.mentions)
     return `### ${i + 1}. [${time}] ${chatType}
 - **message_id**: \`${msg.message_id}\`
-- **发送者**: \`${sender}\`
+- **发送者**: ${name}(\`${openId}\`)
 - **内容**: ${content}`
-  })
+  }))
   return lines.join("\n\n")
 }
 
-async function larkApi(method: string, path: string, opts?: { params?: Record<string, string>, data?: string, output?: string }): Promise<string> {
-  const cmd = ["lark-cli", "api", method, path, "--as", "bot"]
+async function larkApi(method: string, path: string, opts?: { params?: Record<string, string>, data?: string, output?: string, as?: "bot" | "user", cwd?: string }): Promise<string> {
+  const identity = opts?.as ?? "bot"
+  const cmd = ["lark-cli", "api", method, path, "--as", identity]
   if (opts?.params) cmd.push("--params", JSON.stringify(opts.params))
   if (opts?.data) cmd.push("--data", opts.data)
   if (opts?.output) cmd.push("-o", opts.output)
-  const proc = spawn({ cmd, stdout: "pipe", stderr: "pipe" })
+  const proc = spawn({ cmd, stdout: "pipe", stderr: "pipe", cwd: opts?.cwd })
   const text = await new Response(proc.stdout).text()
   const exitCode = await proc.exited
   if (exitCode !== 0) {
@@ -118,7 +122,16 @@ export async function fetchChatDetail(chatId: string): Promise<string> {
 }
 
 /**
- * 获取发送者详情并格式化为 markdown
+ * 获取群详情原始数据（供配置自动填充）
+ */
+export async function fetchChatRaw(chatId: string): Promise<{ name: string; description: string }> {
+  const raw = await larkApi("GET", `/open-apis/im/v1/chats/${chatId}`)
+  const { data } = JSON.parse(raw)
+  return { name: data.name, description: data.description || "" }
+}
+
+/**
+ * 获取用户详情并格式化为 markdown
  */
 export async function fetchUserDetail(openId: string): Promise<string> {
   const raw = await larkApi("GET", `/open-apis/contact/v3/users/${openId}`, {
@@ -136,6 +149,33 @@ export async function fetchUserDetail(openId: string): Promise<string> {
 }
 
 /**
+ * 获取用户名字（供缓存使用）
+ */
+async function fetchUserName(openId: string): Promise<string> {
+  const raw = await larkApi("GET", `/open-apis/contact/v3/users/${openId}`, {
+    params: { user_id_type: "open_id" },
+  })
+  const { data } = JSON.parse(raw)
+  return data.user.name as string
+}
+
+/**
+ * 创建用户名字缓存，未命中时自动请求 API
+ */
+export function createUserCache(initial?: Record<string, string>): UserCache {
+  const cache = new Map<string, string>(Object.entries(initial ?? {}))
+  return {
+    async getName(openId: string): Promise<string> {
+      const cached = cache.get(openId)
+      if (cached) return cached
+      const name = await fetchUserName(openId)
+      cache.set(openId, name)
+      return name
+    },
+  }
+}
+
+/**
  * 向飞书群/用户发送消息，支持 @人 和回复
  * @param chatId 群组 chat_id
  * @param text 文本内容
@@ -150,14 +190,12 @@ export async function sendMessage(chatId: string, text: string, mentionOpenIds: 
   }
 
   if (replyMessageId) {
-    // 回复消息
     const raw = await larkApi("POST", `/open-apis/im/v1/messages/${replyMessageId}/reply`, {
       data: JSON.stringify(body),
     })
     return raw
   }
 
-  // 发送新消息
   const raw = await larkApi("POST", "/open-apis/im/v1/messages", {
     params: { receive_id_type: "chat_id" },
     data: JSON.stringify({ receive_id: chatId, ...body }),
@@ -165,7 +203,7 @@ export async function sendMessage(chatId: string, text: string, mentionOpenIds: 
   return raw
 }
 
-function buildPostContent(text: string, mentionOpenIds: string[]): { title: string, content: unknown[][] } {
+function buildPostContent(text: string, mentionOpenIds: string[]) {
   const paragraph: unknown[] = []
 
   for (const openId of mentionOpenIds) {
@@ -176,7 +214,7 @@ function buildPostContent(text: string, mentionOpenIds: string[]): { title: stri
     paragraph.push({ tag: "text", text })
   }
 
-  return { title: "", content: [paragraph] }
+  return { zh_cn: { title: "", content: [paragraph] } }
 }
 
 /**
@@ -185,12 +223,12 @@ function buildPostContent(text: string, mentionOpenIds: string[]): { title: stri
 export async function fetchMessageImage(messageId: string, imageKey: string): Promise<string> {
   const dir = join(tmpdir(), "lark-images")
   await mkdir(dir, { recursive: true })
-  const filePath = join(dir, `${imageKey}.png`)
   await larkApi("GET", `/open-apis/im/v1/messages/${messageId}/resources/${imageKey}`, {
     params: { type: "image" },
-    output: filePath,
+    output: `${imageKey}.png`,
+    cwd: dir,
   })
-  return filePath
+  return join(dir, `${imageKey}.png`)
 }
 
 /**

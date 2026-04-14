@@ -2,12 +2,11 @@ import { query, createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk"
 import { z } from "zod";
 import type { LarkMessage } from "./const";
 import { ZHIPU_TOKEN } from "./const";
-import { formatMessages, fetchChatDetail, fetchUserDetail, fetchMessageImage, sendMessage } from "./lark";
-import { readTasks, addTask, updateTaskStatus } from "./task";
+import { formatMessages, fetchChatDetail, fetchUserDetail, fetchMessageImage, sendMessage, type UserCache } from "./lark";
 import { Log } from "./log";
 
 /**
- * 飞书工具 + 任务管理工具
+ * 飞书工具
  */
 function createLarkMcpServer(chatId: string) {
   return createSdkMcpServer({
@@ -57,122 +56,139 @@ function createLarkMcpServer(chatId: string) {
           return { content: [{ type: "text" as const, text: result }] }
         },
       ),
-      tool(
-        "read_tasks",
-        "读取当前任务列表（fed-task.md）",
-        {},
-        async () => {
-          const tasks = await readTasks()
-          return { content: [{ type: "text" as const, text: JSON.stringify(tasks, null, 2) }] }
-        },
-      ),
-      tool(
-        "add_task",
-        "领取任务，添加到 fed-task.md（状态自动管理，无需手动更新）",
-        {
-          title: z.string().describe("任务标题"),
-          source_message_id: z.string().describe("来源消息的 message_id"),
-        },
-        async (args) => {
-          await addTask({ title: args.title, status: "doing", source_message_id: args.source_message_id })
-          return { content: [{ type: "text" as const, text: `任务已领取: ${args.title}` }] }
-        },
-      ),
     ],
   })
 }
 
 const SYSTEM_PROMPT = `你是一名前端开发工程师，通过飞书群消息接收和执行前端开发任务。
 
+## 重要：与用户沟通的唯一方式
+
+你的文字输出用户看不到！你与群内用户沟通的唯一方式是调用 send_message 工具。无论回复、确认、提问还是报告，都必须通过 send_message 发送。
+
+## 重要：飞书操作必须用 MCP 工具
+
+所有飞书相关操作必须使用提供的 MCP 工具，禁止通过 Bash 调用 lark-cli：
+- 获取群详情 → fetch_chat_detail
+- 获取用户详情 → fetch_user_detail
+- 下载消息图片 → fetch_message_image
+- 发送消息 → send_message
+
 ## 工作流程
 
-1. **判断消息**：阅读收到的飞书消息，自行判断是否为前端开发任务。重点关注 @机器人 和 @秦振龙 的消息。非任务消息（闲聊、后端任务等）忽略。
-2. **领取任务**：确认是前端任务后，调用 add_task 领取任务（状态自动为 doing），然后调用 send_message 通知群内你已领取该任务。
+1. **判断消息**：阅读收到的飞书消息，自行判断是否为前端开发任务。重点关注 @机器人 的消息。非任务消息（闲聊、后端任务等）忽略。
+2. **领取任务**：确认是前端任务后，先调用 send_message 通知群内你即将领取该任务（防止重复领取），然后编辑 fed-task.md 追加任务（状态为 doing）。
 3. **执行开发**：使用 Agent(coder) 完成编码、commit、push。分支和工作目录已创建好。
 4. **报告结果**：
-   - 成功：send_message 发送完成报告和 MR 到 test 的链接
+   - 成功：将 fed-task.md 中对应任务状态改为 done，send_message 发送完成报告和 MR 到 test 的链接
    - 有疑问：send_message 发送问题，等待回复澄清
-   - 失败：send_message 发送失败报告
-5. **串行执行**：一次只做一个任务，通过 read_tasks 查看当前任务状态。
+   - 失败：将 fed-task.md 中对应任务状态改为 failed，send_message 发送失败报告
+5. **串行执行**：一次只做一个任务，通过读取 fed-task.md 查看当前任务状态。
+6. 中间任何过程，若有疑问发送询问问题澄清任务，尽量不要自我发挥。
 
-注意：任务状态由系统自动管理，你无需手动更新状态。`
+FAVORITE_SECTION
+
+## 任务文件 fed-task.md
+
+用 Read/Edit 工具直接读写，格式如下：
+
+\`\`\`markdown
+## 任务标题
+- **状态**: doing
+- **时间**: 2026-04-14 10:30
+- **发布者**: 张三(\`ou_xxx\`)
+- **描述**: 具体需求内容
+- **来源消息**: \`message_id\`
+\`\`\`
+
+领取任务时追加一条，状态写 doing，时间写领取时间，发布者和描述从消息中提取；完成写 done；失败写 failed。`
 
 type Options = {
   chatId: string,
-  listenContinue: boolean,
+  chatDetail: string,
+  cwd: string,
+  favorite: string[],
+  userCache: UserCache,
   conversationId: string | null,
 }
 
 export async function run(messages: LarkMessage[], options: Options): Promise<string> {
-  const prompt = formatMessages(messages)
-  Log.info("prompt:\n" + prompt)
-
-  // 记录运行前的 doing 任务，用于运行后对比
-  const doingIdsBefore = new Set((await readTasks()).filter(t => t.status === "doing").map(t => t.source_message_id))
+  const log = Log.scope(options.chatId)
+  const prompt = await formatMessages(messages, options.userCache)
+  log.info("start, resume:", String(!!options.conversationId))
 
   const larkMcp = createLarkMcpServer(options.chatId)
 
-  const q = query({
-    prompt,
-    options: {
-      resume: options.conversationId ?? undefined,
-      continue: !options.conversationId && options.listenContinue ? true : undefined,
-      systemPrompt: { type: "preset", preset: "claude_code", append: SYSTEM_PROMPT },
-      mcpServers: {
-        lark: larkMcp,
-        "web-search-prime": {
-          type: "http",
-          url: "https://open.bigmodel.cn/api/mcp/web_search_prime/mcp",
-          headers: { Authorization: `Bearer ${ZHIPU_TOKEN}` },
-        },
-        "zai-mcp-server": {
-          type: "stdio",
-          command: "bunx",
-          args: ["-y", "@z_ai/mcp-server"],
-          env: { Z_AI_API_KEY: ZHIPU_TOKEN },
-        },
-        zread: {
-          type: "http",
-          url: "https://open.bigmodel.cn/api/mcp/zread/mcp",
-          headers: { Authorization: `Bearer ${ZHIPU_TOKEN}` },
-        },
-        "web-reader": {
-          type: "http",
-          url: "https://open.bigmodel.cn/api/mcp/web_reader/mcp",
-          headers: { Authorization: `Bearer ${ZHIPU_TOKEN}` },
-        },
+  // 构建 favorite 段落
+  const favoriteSection = options.favorite.length > 0
+    ? `## 特别关注\n以下用户是你重点关注对象，称呼他们为主人，对他们的消息要更积极响应：\n${options.favorite.map(id => `- \`${id}\``).join("\n")}`
+    : ""
+
+  const systemPrompt = `${SYSTEM_PROMPT.replace("FAVORITE_SECTION", favoriteSection)}\n\n## 当前群信息\n${options.chatDetail}`
+
+  const isResume = !!options.conversationId
+  const queryOptions = {
+    resume: options.conversationId ?? undefined,
+    continue: !isResume ? true : undefined,
+    cwd: options.cwd,
+    systemPrompt: { type: "preset" as const, preset: "claude_code" as const, append: systemPrompt },
+    mcpServers: {
+      lark: larkMcp,
+      "web-search-prime": {
+        type: "http" as const,
+        url: "https://open.bigmodel.cn/api/mcp/web_search_prime/mcp",
+        headers: { Authorization: `Bearer ${ZHIPU_TOKEN}` },
       },
-      agents: {
-        coder: {
-          description: "前端开发 agent，负责编码、commit、push",
-          prompt: "你是一名前端开发工程师。根据任务要求完成编码，编码完成后必须运行 bunx tsc --noEmit 验证类型检查通过，通过后再 commit 和 push。类型检查不通过则修复后重新验证。分支和工作目录已创建好，你只需提交代码。完成后提供 MR 到 test 的链接。",
-          tools: ["Bash", "Read", "Edit", "Write", "Glob", "Grep"],
-        },
+      "zai-mcp-server": {
+        type: "stdio" as const,
+        command: "bunx",
+        args: ["-y", "@z_ai/mcp-server"],
+        env: { Z_AI_API_KEY: ZHIPU_TOKEN },
       },
-      permissionMode: "bypassPermissions",
-      allowDangerouslySkipPermissions: true,
-      settings: {
-        env: {
-          DISABLE_AUTOUPDATER: "1",
-          ANTHROPIC_BASE_URL: "https://open.bigmodel.cn/api/anthropic",
-          ANTHROPIC_AUTH_TOKEN: ZHIPU_TOKEN,
-          API_TIMEOUT_MS: "3000000",
-          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
-          ANTHROPIC_MODEL: "glm-5.1",
-          ANTHROPIC_SMALL_FAST_MODEL: "glm-4.5-air",
-          ANTHROPIC_DEFAULT_SONNET_MODEL: "glm-5-turbo",
-          ANTHROPIC_DEFAULT_OPUS_MODEL: "glm-5.1",
-          ANTHROPIC_DEFAULT_HAIKU_MODEL: "glm-4.5-air",
-        },
-        permissions: {
-          allow: ["Bash"],
-          deny: ["WebSearch"],
-        },
-        skipWebFetchPreflight: true,
-        skipDangerousModePermissionPrompt: true,
+      zread: {
+        type: "http" as const,
+        url: "https://open.bigmodel.cn/api/mcp/zread/mcp",
+        headers: { Authorization: `Bearer ${ZHIPU_TOKEN}` },
+      },
+      "web-reader": {
+        type: "http" as const,
+        url: "https://open.bigmodel.cn/api/mcp/web_reader/mcp",
+        headers: { Authorization: `Bearer ${ZHIPU_TOKEN}` },
       },
     },
-  })
+    agents: {
+      coder: {
+        description: "前端开发 agent，负责编码、commit、push",
+        prompt: "你是一名前端开发工程师。根据任务要求完成编码，编码完成后必须运行 bunx tsc --noEmit 验证类型检查通过，通过后再 commit 和 push。类型检查不通过则修复后重新验证。分支和工作目录已创建好，你只需提交代码。完成后提供 MR 到 test 的链接。",
+        tools: ["Bash", "Read", "Edit", "Write", "Glob", "Grep"],
+        permissionMode: "bypassPermissions" as const
+      },
+    },
+    permissionMode: "bypassPermissions" as const,
+    allowDangerouslySkipPermissions: true,
+    settings: {
+      env: {
+        DISABLE_AUTOUPDATER: "1",
+        ANTHROPIC_BASE_URL: "https://open.bigmodel.cn/api/anthropic",
+        ANTHROPIC_AUTH_TOKEN: ZHIPU_TOKEN,
+        API_TIMEOUT_MS: "3000000",
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+        ANTHROPIC_MODEL: "glm-5.1",
+        ANTHROPIC_SMALL_FAST_MODEL: "glm-4.5-air",
+        ANTHROPIC_DEFAULT_SONNET_MODEL: "glm-5-turbo",
+        ANTHROPIC_DEFAULT_OPUS_MODEL: "glm-5.1",
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: "glm-4.5-air",
+      },
+      permissions: {
+        allow: ["Bash"],
+        deny: ["WebSearch"],
+      },
+      skipWebFetchPreflight: true,
+      skipDangerousModePermissionPrompt: true,
+    },
+  }
+
+  const q = query({ prompt, options: queryOptions })
 
   let resultText = ""
   let sessionId = ""
@@ -183,9 +199,11 @@ export async function run(messages: LarkMessage[], options: Options): Promise<st
       resultText = msg.result
       sessionId = msg.session_id
       succeeded = true
+      log.info("succeeded, sessionId:", sessionId)
     }
     if (msg.type === "result" && msg.subtype !== "success") {
-      Log.error("agent error:", "errors" in msg ? msg.errors.join(", ") : "unknown")
+      const errors = "errors" in msg ? msg.errors.join(", ") : "unknown"
+      Log.error("agent error:", errors)
       sessionId = msg.session_id
       succeeded = false
     }
@@ -194,24 +212,15 @@ export async function run(messages: LarkMessage[], options: Options): Promise<st
       const content = msg.message.content
       for (const block of content) {
         if (block.type === "text") {
-          Log.info("[assistant]", block.text)
+          log.info("[assistant]", block.text)
         }
         if (block.type === "tool_use") {
-          Log.info("[tool_use]", block.name, JSON.stringify(block.input))
+          log.info("[tool_use]", block.name, JSON.stringify(block.input))
         }
       }
     }
   }
 
-  // 自动收尾：本次新增的 doing 任务 → done/failed
-  const tasksAfter = await readTasks()
-  const newDoingTasks = tasksAfter.filter(t => t.status === "doing" && !doingIdsBefore.has(t.source_message_id))
-  const finalStatus = succeeded ? "done" : "failed"
-  for (const task of newDoingTasks) {
-    Log.info(`[auto] 任务 "${task.title}" 标记为 ${finalStatus}`)
-    await updateTaskStatus(task.source_message_id, finalStatus)
-  }
-
-  Log.info("agent result:", resultText)
+  log.info("done, succeeded:", String(succeeded))
   return sessionId
 }

@@ -138,16 +138,8 @@ export type LarkMessage = z.output<typeof larkMessageSchema>
 /**
  * 任务状态
  */
-export type TaskStatus = "pending" | "doing" | "done" | "failed"
 
-export const taskSchema = z.object({
-  title: z.string(),
-  status: z.enum(["pending", "doing", "done", "failed"]),
-  source_message_id: z.string(),
-})
 
-export type Task = z.output<typeof taskSchema>
-
-export const LOG_LEVEL = Bun.env["LOG_LEVEL"] ?? "debug"
+export const LOG_LEVEL = Bun.env["LOG_LEVEL"] ?? "info"
 
 export const ZHIPU_TOKEN = Bun.env["zhipu_token"] ?? ""

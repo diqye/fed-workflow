@@ -2,6 +2,9 @@
   "name": "fed-workflow",
   "module": "index.ts",
   "type": "module",
+  "bin": {
+    "fed-workflow": "./index.ts"
+  },
   "private": true,
   "devDependencies": {
     "@types/bun": "latest"
@@ -11,6 +14,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.97",
+    "yaml": "^2.8.3",
     "zod": "^4.3.6"
   }
 }

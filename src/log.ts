@@ -1,10 +1,21 @@
+import { isAbsolute, join } from "path"
 import { LOG_LEVEL } from "./const"
+
+let logPath = ""
+
+export function initLog(path: string) {
+    logPath = isAbsolute(path) ? path : join(process.cwd(), path)
+}
 
 function createLogStream() {
     let log = null as null | Bun.FileSink
     return () => {
         if(log) return log
-        log = Bun.file("log-zylon.txt").writer()
+        if(!logPath) {
+            console.error("请通过配置文件 log 字段指定日志文件路径")
+            process.exit(1)
+        }
+        log = Bun.file(logPath).writer()
 
         return log
     }
@@ -17,18 +28,26 @@ function log(...texts:string[]) {
     logF().flush()
 }
 
-export const Log = {
-    debug:(...texts:string[]) => {
-        if(LOG_LEVEL != "debug") return
-        log("[debug]",...texts)
-    },
-    info:(...texts:string[]) => {
-        if(LOG_LEVEL != "info") return Log.debug(...texts)
-        log("[info]",...texts)
-    },
-    error:(...texts:string[]) => {
-        if(LOG_LEVEL != "error") return Log.info(...texts)
-        log("[error]",...texts)
-    },
-    
+const LEVELS: Record<string, number> = { debug: 0, info: 1, error: 2 }
+const currentLevel = LEVELS[LOG_LEVEL] ?? 0
+
+type LogFn = (...texts: string[]) => void
+
+function makeLog(prefix: string, level: string): LogFn {
+    const lv = LEVELS[level]!
+    return (...texts: string[]) => {
+        if(currentLevel > lv) return
+        log(`[${level}]`, prefix, ...texts)
+    }
 }
+
+function createScopedLog(scope: string) {
+    return {
+        debug: makeLog(scope, "debug"),
+        info: makeLog(scope, "info"),
+        error: makeLog(scope, "error"),
+        scope: (sub: string) => createScopedLog(`${scope} - ${sub}`),
+    }
+}
+
+export const Log = createScopedLog("main")
