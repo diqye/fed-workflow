@@ -71,7 +71,7 @@ const SYSTEM_PROMPT = `你是一名前端开发工程师，通过飞书群消息
 所有飞书相关操作必须使用提供的 MCP 工具，禁止通过 Bash 调用 lark-cli：
 - 获取群详情 → fetch_chat_detail
 - 获取用户详情 → fetch_user_detail
-- 下载消息图片 → fetch_message_image
+- 下载消息图片 → fetch_message_image（仅当任务确实需要查看图片内容时才下载，不要主动下载每张图片）
 - 发送消息 → send_message
 
 ## 工作流程
