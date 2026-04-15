@@ -1,5 +1,5 @@
 import { run } from "./agent";
-import { debounceMessages, fetchChatList, fetchChatRaw, createUserCache } from "./lark";
+import { debounceMessages, fetchChatList, fetchChatRaw, fetchChatMembers, fetchBotInfo, createUserCache } from "./lark";
 import { initLog, Log } from "./log";
 import { loadConfig, saveConfig, updateProject, type Config, type ProjectConfig } from "./config";
 import { parseArgs } from "util"
@@ -83,6 +83,10 @@ export async function main() {
         await initLog(config.log)
     }
 
+    // 获取机器人自身信息
+    const botInfo = await fetchBotInfo()
+    Log.info("bot:", botInfo.name, botInfo.open_id)
+
     // 自动填充缺失的 groupName / description
     for(const project of config.projects) {
         if(!project.groupName || !project.description) {
@@ -95,7 +99,17 @@ export async function main() {
         console.log(`项目: ${project.groupName ?? project.chatId}, cwd: ${project.cwd}, conversationId: ${project.conversationId ?? "新建"}`)
     }
 
-    const userCache = createUserCache()
+    // 预填充用户缓存（通过群成员 API 获取名字）
+    const initialUsers: Record<string, string> = {}
+    for(const project of config.projects) {
+        try {
+            const members = await fetchChatMembers(project.chatId)
+            Object.assign(initialUsers, members)
+        } catch(e) {
+            console.error(`获取群成员失败 ${project.chatId}:`, e)
+        }
+    }
+    const userCache = createUserCache({ ...initialUsers, [botInfo.open_id]: botInfo.name })
     const projectMap = new Map(config.projects.map(p => [p.chatId, p]))
     const groupStates = new Map<string, GroupState>()
 
@@ -132,6 +146,8 @@ export async function main() {
                 chatId,
                 chatDetail,
                 cwd: project.cwd,
+                botName: botInfo.name,
+                botOpenId: botInfo.open_id,
                 favorite: project.favorite ?? [],
                 userCache,
                 conversationId: project.conversationId ?? null,

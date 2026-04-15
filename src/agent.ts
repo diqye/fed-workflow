@@ -107,6 +107,8 @@ type Options = {
   chatId: string,
   chatDetail: string,
   cwd: string,
+  botName: string,
+  botOpenId: string,
   favorite: string[],
   userCache: UserCache,
   conversationId: string | null,
@@ -124,7 +126,7 @@ export async function run(messages: LarkMessage[], options: Options): Promise<st
     ? `## 特别关注\n以下用户是你重点关注对象，称呼他们为主人，对他们的消息要更积极响应：\n${options.favorite.map(id => `- \`${id}\``).join("\n")}`
     : ""
 
-  const systemPrompt = `${SYSTEM_PROMPT.replace("FAVORITE_SECTION", favoriteSection)}\n\n## 当前群信息\n${options.chatDetail}`
+  const systemPrompt = `${SYSTEM_PROMPT.replace("FAVORITE_SECTION", favoriteSection)}\n\n## 我的身份\n- **名字**: ${options.botName}\n- **open_id**: \`${options.botOpenId}\`\n- 消息中 @${options.botName} 或 @\`${options.botOpenId}\` 就是在叫你\n\n## 当前群信息\n${options.chatDetail}`
 
   const isResume = !!options.conversationId
   const queryOptions = {

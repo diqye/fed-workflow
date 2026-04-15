@@ -5,13 +5,40 @@
 ## 依赖
 
 - [Bun](https://bun.com) runtime
-- [lark-cli](https://github.com/larksuite/cli) — 飞书命令行工具，需提前登录并配置好 bot 权限
+- [lark-cli](https://github.com/larksuite/cli) — 飞书命令行工具
 
 ## 安装
 
 ```bash
 bun install
 ```
+
+## 飞书授权
+
+本工具所有 API 调用均使用 bot 身份（`--as bot`），无需用户登录。只需确保 bot 应用已创建并授权：
+
+```bash
+# 查看当前授权状态
+lark-cli auth status
+
+# 如果未授权，使用 bot 身份登录
+lark-cli auth login
+
+# 验证 bot 可用
+lark-cli api GET /open-apis/bot/v3/info/ --as bot
+```
+
+### Bot 应用所需权限
+
+在飞书开放平台为 bot 应用开启以下 scope：
+
+| Scope | 用途 |
+|-------|------|
+| `im:chat:read` | 读取群信息 |
+| `im:message:readonly` | 读取消息 |
+| `im:message:send_as_bot` | 发送消息 |
+| `im:resource` | 下载图片/文件 |
+| `contact:user.base:readonly` | 查询用户信息（MCP 工具） |
 
 ## 初始化配置
 
@@ -47,7 +74,7 @@ projects:
 
 | 字段 | 必填 | 说明 |
 |------|------|------|
-| `log` | 否 | 日志文件全路径 |
+| `log` | 否 | 日志文件全路径，启动时清空 |
 | `projects` | 是 | 项目列表 |
 | `projects[].chatId` | 是 | 飞书群 chat_id |
 | `projects[].cwd` | 是 | 项目工作目录，agent 在此目录下编码 |
@@ -78,10 +105,11 @@ bun run index.ts --config /path/to/my-config.yaml
 ## 工作流程
 
 1. 程序监听飞书群消息
-2. 判断是否为前端开发任务（重点关注 @机器人 的消息）
-3. 确认任务后：`send_message` 通知群内领取 → 编辑 `fed-task.md` 追加任务
-4. 调用 coder agent 完成编码、commit、push
-5. 完成后更新任务状态，`send_message` 发送完成报告和 MR 链接
+2. 启动时通过群成员 API 预加载用户名字缓存
+3. 判断是否为前端开发任务（重点关注 @机器人 的消息）
+4. 确认任务后：`send_message` 通知群内领取 → 编辑 `fed-task.md` 追加任务
+5. 调用 coder agent 完成编码、commit、push
+6. 完成后更新任务状态，`send_message` 发送完成报告和 MR 链接
 
 ### 多群并行
 

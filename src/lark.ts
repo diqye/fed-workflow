@@ -79,9 +79,8 @@ export async function formatMessages(messages: LarkMessage[], userCache: UserCac
   return lines.join("\n\n")
 }
 
-async function larkApi(method: string, path: string, opts?: { params?: Record<string, string>, data?: string, output?: string, as?: "bot" | "user", cwd?: string }): Promise<string> {
-  const identity = opts?.as ?? "bot"
-  const cmd = ["lark-cli", "api", method, path, "--as", identity]
+async function larkApi(method: string, path: string, opts?: { params?: Record<string, string>, data?: string, output?: string, cwd?: string }): Promise<string> {
+  const cmd = ["lark-cli", "api", method, path, "--as", "bot"]
   if (opts?.params) cmd.push("--params", JSON.stringify(opts.params))
   if (opts?.data) cmd.push("--data", opts.data)
   if (opts?.output) cmd.push("-o", opts.output)
@@ -93,6 +92,15 @@ async function larkApi(method: string, path: string, opts?: { params?: Record<st
     throw new Error(`lark-cli api failed: ${err}`)
   }
   return text
+}
+
+/**
+ * 获取机器人自身信息
+ */
+export async function fetchBotInfo(): Promise<{ name: string; open_id: string }> {
+  const raw = await larkApi("GET", "/open-apis/bot/v3/info/")
+  const { bot } = JSON.parse(raw)
+  return { name: bot.app_name, open_id: bot.open_id }
 }
 
 /**
@@ -149,18 +157,22 @@ export async function fetchUserDetail(openId: string): Promise<string> {
 }
 
 /**
- * 获取用户名字（供缓存使用）
+ * 获取群成员列表（bot 身份），返回 open_id → name 映射
  */
-async function fetchUserName(openId: string): Promise<string> {
-  const raw = await larkApi("GET", `/open-apis/contact/v3/users/${openId}`, {
-    params: { user_id_type: "open_id" },
-  })
+export async function fetchChatMembers(chatId: string): Promise<Record<string, string>> {
+  const raw = await larkApi("GET", `/open-apis/im/v1/chats/${chatId}/members`)
   const { data } = JSON.parse(raw)
-  return data.user.name as string
+  const result: Record<string, string> = {}
+  for (const item of data.items ?? []) {
+    if (item.member_id && item.name) {
+      result[item.member_id] = item.name
+    }
+  }
+  return result
 }
 
 /**
- * 创建用户名字缓存，未命中时自动请求 API
+ * 创建用户名字缓存，未命中时返回 open_id
  */
 export function createUserCache(initial?: Record<string, string>): UserCache {
   const cache = new Map<string, string>(Object.entries(initial ?? {}))
@@ -168,9 +180,8 @@ export function createUserCache(initial?: Record<string, string>): UserCache {
     async getName(openId: string): Promise<string> {
       const cached = cache.get(openId)
       if (cached) return cached
-      const name = await fetchUserName(openId)
-      cache.set(openId, name)
-      return name
+      // bot 身份无法调通讯录接口，返回 open_id
+      return openId
     },
   }
 }
@@ -240,7 +251,7 @@ function resolveMentions(text: string, mentions?: LarkMention[]): string {
   if (!mentions) return text
   let result = text
   for (const m of mentions) {
-    result = result.replaceAll(m.key, `@${m.name}`)
+    result = result.replaceAll(m.key, `@${m.name}(\`${m.id.open_id}\`)`)
   }
   return result
 }
@@ -270,7 +281,11 @@ function formatContent(content: LarkContent, mentions?: LarkMention[]): string {
             case "text": return resolveMentions(el.text, mentions)
             case "img": return `[图片:${el.image_key}]`
             case "a": return `[${el.text}](${el.href})`
-            case "at": return `@${el.user_name}`
+            case "at": {
+              const mention = mentions?.find(m => m.key === el.user_id)
+              if (mention) return `@${mention.name}(\`${mention.id.open_id}\`)`
+              return `@${el.user_name || el.user_id}`
+            }
           }
         }).join("")
         parts.push(line)
