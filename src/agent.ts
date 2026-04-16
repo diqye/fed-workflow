@@ -2,7 +2,7 @@ import { query, createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk"
 import { z } from "zod";
 import type { LarkMessage } from "./const";
 import { ZHIPU_TOKEN } from "./const";
-import { formatMessages, fetchChatDetail, fetchUserDetail, fetchMessageImage, sendMessage, type UserCache } from "./lark";
+import { formatMessages, fetchChatDetail, fetchUserDetail, fetchMessageResource, sendImageMessage, sendFileMessage, sendMessage, type UserCache } from "./lark";
 import { Log } from "./log";
 
 /**
@@ -32,14 +32,16 @@ function createLarkMcpServer(chatId: string) {
         },
       ),
       tool(
-        "fetch_message_image",
-        "下载飞书消息中的图片，返回本地文件路径",
+        "fetch_message_resource",
+        "下载飞书消息中的图片或文件，返回本地文件路径",
         {
           message_id: z.string().describe("消息 message_id"),
-          image_key: z.string().describe("图片 image_key"),
+          file_key: z.string().describe("图片 image_key 或文件 file_key"),
+          type: z.enum(["image", "file"]).describe("资源类型：image 或 file"),
+          file_name: z.string().optional().describe("文件名（type=file 时建议提供）"),
         },
         async (args) => {
-          const path = await fetchMessageImage(args.message_id, args.image_key)
+          const path = await fetchMessageResource(args.message_id, args.file_key, args.type, args.file_name)
           return { content: [{ type: "text" as const, text: path }] }
         },
       ),
@@ -53,6 +55,24 @@ function createLarkMcpServer(chatId: string) {
         },
         async (args) => {
           const result = await sendMessage(chatId, args.text, args.mention_open_ids, args.reply_message_id)
+          return { content: [{ type: "text" as const, text: result }] }
+        },
+      ),
+      tool(
+        "send_image",
+        "向当前群组发送图片消息（自动上传本地图片文件）",
+        { file_path: z.string().describe("本地图片文件路径") },
+        async (args) => {
+          const result = await sendImageMessage(chatId, args.file_path)
+          return { content: [{ type: "text" as const, text: result }] }
+        },
+      ),
+      tool(
+        "send_file",
+        "向当前群组发送文件消息（自动上传本地文件）",
+        { file_path: z.string().describe("本地文件路径") },
+        async (args) => {
+          const result = await sendFileMessage(chatId, args.file_path)
           return { content: [{ type: "text" as const, text: result }] }
         },
       ),
@@ -71,8 +91,10 @@ const SYSTEM_PROMPT = `你是一名前端开发工程师，通过飞书群消息
 所有飞书相关操作必须使用提供的 MCP 工具，禁止通过 Bash 调用 lark-cli：
 - 获取群详情 → fetch_chat_detail
 - 获取用户详情 → fetch_user_detail
-- 下载消息图片 → fetch_message_image（仅当任务确实需要查看图片内容时才下载，不要主动下载每张图片）
-- 发送消息 → send_message
+- 下载消息资源 → fetch_message_resource（下载图片或文件，仅当任务确实需要查看内容时才下载）
+- 发送消息 → send_message（文本 + @人）
+- 发送图片 → send_image（发送本地图片文件）
+- 发送文件 → send_file（发送本地文件）
 
 ## 工作流程
 

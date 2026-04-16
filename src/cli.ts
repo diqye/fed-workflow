@@ -137,7 +137,7 @@ export async function main() {
 
         state.running = true
         const chatDetail = buildChatDetail(project)
-        const log = Log.scope(chatId)
+        const log = Log.scope(`${project.groupName ?? "unknown"}(${chatId})`)
 
         log.info("startRun, msgs:", String(runMsgs.length), "conversationId:", project.conversationId ?? "null")
 

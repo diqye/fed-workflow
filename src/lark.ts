@@ -231,17 +231,56 @@ function buildPostContent(text: string, mentionOpenIds: string[]) {
 }
 
 /**
- * 下载消息中的图片，返回本地文件路径
+ * 发送图片消息（本地文件自动上传）
  */
-export async function fetchMessageImage(messageId: string, imageKey: string): Promise<string> {
-  const dir = join(tmpdir(), "lark-images")
+export async function sendImageMessage(chatId: string, filePath: string): Promise<string> {
+  const proc = spawn({
+    cmd: ["lark-cli", "im", "+messages-send", "--chat-id", chatId, "--image", filePath, "--as", "bot"],
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  const text = await new Response(proc.stdout).text()
+  const exitCode = await proc.exited
+  if (exitCode !== 0) {
+    const err = await new Response(proc.stderr).text()
+    throw new Error(`send image message failed: ${err}`)
+  }
+  const { data } = JSON.parse(text)
+  return `已发送图片消息 ${data.message_id}`
+}
+
+/**
+ * 发送文件消息（本地文件自动上传）
+ */
+export async function sendFileMessage(chatId: string, filePath: string): Promise<string> {
+  const proc = spawn({
+    cmd: ["lark-cli", "im", "+messages-send", "--chat-id", chatId, "--file", filePath, "--as", "bot"],
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  const text = await new Response(proc.stdout).text()
+  const exitCode = await proc.exited
+  if (exitCode !== 0) {
+    const err = await new Response(proc.stderr).text()
+    throw new Error(`send file message failed: ${err}`)
+  }
+  const { data } = JSON.parse(text)
+  return `已发送文件消息 ${data.message_id}`
+}
+
+/**
+ * 下载消息中的资源（图片/文件），返回本地文件路径
+ */
+export async function fetchMessageResource(messageId: string, fileKey: string, type: "image" | "file", fileName?: string): Promise<string> {
+  const dir = join(tmpdir(), `lark-${type}s`)
   await mkdir(dir, { recursive: true })
-  await larkApi("GET", `/open-apis/im/v1/messages/${messageId}/resources/${imageKey}`, {
-    params: { type: "image" },
-    output: `${imageKey}.png`,
+  const output = fileName ?? `${fileKey}.${type === "image" ? "png" : "bin"}`
+  await larkApi("GET", `/open-apis/im/v1/messages/${messageId}/resources/${fileKey}`, {
+    params: { type },
+    output,
     cwd: dir,
   })
-  return join(dir, `${imageKey}.png`)
+  return join(dir, output)
 }
 
 /**
