@@ -143,6 +143,7 @@ export async function main() {
 
         try {
             const sessionId = await run(runMsgs, {
+                log,
                 chatId,
                 chatDetail,
                 cwd: project.cwd,

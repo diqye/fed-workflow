@@ -134,10 +134,11 @@ type Options = {
   favorite: string[],
   userCache: UserCache,
   conversationId: string | null,
+  log: typeof Log
 }
 
 export async function run(messages: LarkMessage[], options: Options): Promise<string> {
-  const log = Log.scope(options.chatId)
+  const log = options.log
   const prompt = await formatMessages(messages, options.userCache)
   log.info("start, resume:", String(!!options.conversationId))
 
@@ -191,6 +192,7 @@ export async function run(messages: LarkMessage[], options: Options): Promise<st
     permissionMode: "bypassPermissions" as const,
     allowDangerouslySkipPermissions: true,
     settings: {
+      autoCompactWindow: 200000,
       env: {
         DISABLE_AUTOUPDATER: "1",
         ANTHROPIC_BASE_URL: "https://open.bigmodel.cn/api/anthropic",
