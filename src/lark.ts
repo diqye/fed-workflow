@@ -72,18 +72,19 @@ export type UserCache = {
  * 将消息列表美化为 markdown
  */
 export async function formatMessages(messages: LarkMessage[], userCache: UserCache, chatId?: string): Promise<string> {
-  const lines = await Promise.all(messages.map(async (m, i) => {
-    const msg = m.event.message
-    const openId = m.event.sender.sender_id.open_id
+  const lines: string[] = []
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i]!.event.message
+    const openId = messages[i]!.event.sender.sender_id.open_id
     const name = await userCache.getName(openId, chatId ?? msg.chat_id)
     const time = new Date(Number(msg.create_time)).toLocaleString("zh-CN")
     const chatType = msg.chat_type === "p2p" ? "私聊" : "群聊"
-    const content = tryParseContent(msg.content, msg.mentions)
-    return `### ${i + 1}. [${time}] ${chatType}
+    const content = tryParseContent(messages[i]!.event.message.content, messages[i]!.event.message.mentions)
+    lines.push(`### ${i + 1}. [${time}] ${chatType}
 - **message_id**: \`${msg.message_id}\`
 - **发送者**: ${name}(\`${openId}\`)
-- **内容**: ${content}`
-  }))
+- **内容**: ${content}`)
+  }
   return lines.join("\n\n")
 }
 
@@ -168,21 +169,27 @@ export async function fetchUserDetail(openId: string): Promise<string> {
  * 获取群成员列表（bot 身份），返回 open_id → name 映射
  */
 export async function fetchChatMembers(chatId: string): Promise<Record<string, string>> {
-  const raw = await larkApi("GET", `/open-apis/im/v1/chats/${chatId}/members`)
-  const data = JSON.parse(raw)?.data
   const result: Record<string, string> = {}
-  for (const item of data?.items ?? []) {
-    if (item.member_id && item.name) {
-      result[item.member_id] = item.name
+  let pageToken: string | undefined
+  do {
+    const params: Record<string, string> = { page_size: "100" }
+    if (pageToken) params.page_token = pageToken
+    const raw = await larkApi("GET", `/open-apis/im/v1/chats/${chatId}/members`, { params })
+    const data = JSON.parse(raw)?.data
+    for (const item of data?.items ?? []) {
+      if (item.member_id && item.name) {
+        result[item.member_id] = item.name
+      }
     }
-  }
+    pageToken = data?.has_more ? data?.page_token : undefined
+  } while (pageToken)
   return result
 }
 
 /**
  * 创建用户名字缓存，cache miss 时自动拉取指定群成员
  */
-export function createUserCache(initial?: Record<string, string>): UserCache {
+export function createUserCache(initial?: Record<string, string>, chatNames?: Map<string, string>): UserCache {
   const cache = new Map<string, string>(Object.entries(initial ?? {}))
   const fetchedChats = new Set<string>()
 
@@ -197,7 +204,8 @@ export function createUserCache(initial?: Record<string, string>): UserCache {
         try {
           const members = await fetchChatMembers(chatId)
           for (const [k, v] of Object.entries(members)) cache.set(k, v)
-          Log.info(`群成员缓存已填充: ${chatId} (${Object.keys(members).length}人)`)
+          const chatName = chatNames?.get(chatId) ?? chatId
+          Log.info(`群成员缓存已填充: ${chatName} (${Object.keys(members).length}人)`)
         } catch {}
         const name = cache.get(openId)
         if (name) return name

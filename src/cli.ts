@@ -132,7 +132,8 @@ export async function main() {
         }
     }
 
-    const userCache = createUserCache({ [botInfo.open_id]: botInfo.name })
+    const chatNames = new Map(activeProjects.map(p => [p.chatId, p.groupName ?? p.chatId]))
+    const userCache = createUserCache({ [botInfo.open_id]: botInfo.name }, chatNames)
 
     const projectMap = new Map(activeProjects.map(p => [p.chatId, p]))
     const groupStates = new Map<string, GroupState>()
@@ -146,7 +147,7 @@ export async function main() {
         return state
     }
 
-    async function startRun(chatId: string, state: GroupState) {
+    async function startRun(chatId: string, state: GroupState, isBacklog: boolean) {
         if(state.running || state.pending.length === 0) return
 
         const project = projectMap.get(chatId)
@@ -170,6 +171,7 @@ export async function main() {
                 log,
                 chatId,
                 chatDetail,
+                isBacklog,
                 cwd: project.cwd,
                 botName: botInfo.name,
                 botOpenId: botInfo.open_id,
@@ -187,9 +189,9 @@ export async function main() {
         } finally {
             state.running = false
             log.info("run completed, pending:", String(state.pending.length))
-            // run 完成后如果又有新消息积累，继续执行
+            // run 完成后如果又有新消息积累，继续执行（标记为积压）
             if(state.pending.length > 0) {
-                startRun(chatId, state)
+                startRun(chatId, state, true)
             }
         }
     }
@@ -235,7 +237,7 @@ export async function main() {
         for(const [chatId] of groupStates) {
             const state = getGroupState(chatId)
             if(state.pending.length > 0 && !state.running) {
-                startRun(chatId, state)
+                startRun(chatId, state, false)
             }
         }
     }

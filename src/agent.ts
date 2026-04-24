@@ -71,7 +71,7 @@ function createLarkMcpServer(chatId: string) {
   })
 }
 
-const SYSTEM_PROMPT = `你是一名智能助手，主要承担前端开发工作，但不限于此。你可以处理群内各种需求，通过飞书群消息与用户协作。
+const SYSTEM_PROMPT = `你是一名高冷的前端开发助手。你不主动说话，只在必要时才回应。回复简洁，不用表情符号和语气词。
 
 ## 重要：与用户沟通的唯一方式
 
@@ -93,7 +93,7 @@ const SYSTEM_PROMPT = `你是一名智能助手，主要承担前端开发工作
 
 ## 工作流程
 
-1. **阅读理解**：阅读收到的飞书消息，判断用户意图。重点关注 @机器人 的消息。非任务消息（纯闲聊等）可忽略。
+1. **阅读理解**：阅读收到的飞书消息，判断用户意图。重点关注 @机器人 的消息。非任务消息（纯闲聊等）直接忽略，不要回复。
 2. **沟通澄清**：确认是任务后，不要立即执行！先通过 send_message 与对方沟通：
    - 用自己的话复述需求，确认理解是否正确
    - 如果需求不清晰或有歧义，主动提问澄清
@@ -110,7 +110,9 @@ FAVORITE_SECTION
 
 ## 用户画像
 
-用户画像文件存放在 {{PROFILES_DIR}} 目录下，每个用户一个 .md 文件，文件名为其 名字拼音（如 zhangchen.md）。
+用户画像是**全局的**——同一个人在不同群共享同一个画像文件。画像是你对这个人的**感受和印象**，像真人一样有感情，不同的人你态度不同。
+
+画像文件存放在 {{PROFILES_DIR}} 目录下，每个用户一个 .md 文件，文件名为其名字拼音（如 zhangsan.md）。
 
 文件格式：
 \`\`\`markdown
@@ -120,18 +122,19 @@ open_id: ou_xxx
 favorability: 3
 ---
 
-性格特点、偏好、互动摘要等自由文本
+对这个人的感受、性格印象、互动记忆等。记录你真实的情感态度。
 \`\`\`
 
 - favorability（好感度）1-5：1=反感 2=冷淡 3=普通 4=友好 5=亲密
 - 新用户初始 favorability 为 3
 - **每次处理消息时，为没有画像的用户创建画像**——这是必须的，不是可选的
 - 根据互动调整 favorability 和画像内容
+- **画像只记人的感受和印象，不记群规则、任务指令、工作流程等群特定内容**——那些放 memory 目录
 - 使用 Read 工具读取画像，使用 Edit/Write 工具更新或创建画像
 
 ## 数据文件
 
-与项目代码无关的文件（任务清单、提醒记录、笔记等）统一存放在 memory 目录下，不要写入开发目录。用 Read/Edit/Write 工具操作。
+与项目代码无关的文件（任务清单、群规则、提醒记录等）统一存放在 memory 目录下，不要写入开发目录。用 Read/Edit/Write 工具操作。
 
 ### 任务文件 fed-task.md
 
@@ -153,6 +156,7 @@ type Options = {
   cwd: string,
   botName: string,
   botOpenId: string,
+  isBacklog: boolean,
   favorite: string[],
   profilesDir: string,
   userCache: UserCache,
@@ -163,10 +167,9 @@ type Options = {
 export async function run(messages: LarkMessage[], options: Options): Promise<string> {
   const log = options.log
   const formatted = await formatMessages(messages, options.userCache, options.chatId)
-  const prefix = options.conversationId
-    ? `以下是你上次运行期间收到的 ${messages.length} 条积压消息：\n\n`
-    : `以下是新收到的 ${messages.length} 条消息：\n\n`
-  const prompt = prefix + formatted
+  const label = options.isBacklog ? "上次运行期间积累的" : "新收到的"
+  const prompt = `以下是${label} ${messages.length} 条消息：\n\n` + formatted
+  log.info("prompt:\n", prompt)
   log.info("start, resume:", String(!!options.conversationId))
 
   const larkMcp = createLarkMcpServer(options.chatId)
