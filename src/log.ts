@@ -1,13 +1,14 @@
-import { isAbsolute, join } from "path"
-import { writeFile } from "fs/promises"
+import { join } from "path"
+import { mkdirSync } from "fs"
+import { FED_LOG_DIR } from "./const"
 import { LOG_LEVEL } from "./const"
 
 let logPath = ""
 
-export async function initLog(path: string) {
-    logPath = isAbsolute(path) ? path : join(process.cwd(), path)
-    // 启动时清空日志文件
-    await writeFile(logPath, "")
+export async function initLog() {
+    mkdirSync(FED_LOG_DIR, { recursive: true })
+    const ts = new Date().toISOString().replace(/[T:]/g, "-").replace(/\..+/, "")
+    logPath = join(FED_LOG_DIR, `log-${ts}.txt`)
 }
 
 function createLogStream() {
@@ -15,7 +16,7 @@ function createLogStream() {
     return () => {
         if(log) return log
         if(!logPath) {
-            console.error("请通过配置文件 log 字段指定日志文件路径")
+            console.error("日志未初始化，请先调用 initLog()")
             process.exit(1)
         }
         log = Bun.file(logPath).writer()

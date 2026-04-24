@@ -8,11 +8,11 @@ export type ProjectConfig = {
   conversationId?: string
   groupName?: string
   description?: string
+  /** 决策人，群内有异议时以这些人的意见为准。如 "秦振龙 称呼为哥" */
   favorite?: string[]
 }
 
 export type Config = {
-  log?: string
   projects: ProjectConfig[]
 }
 

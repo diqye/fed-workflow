@@ -1,6 +1,6 @@
 import { spawn } from "bun";
 import { tmpdir } from "os";
-import { join } from "path";
+import { join, parse } from "path";
 import { mkdir } from "fs/promises";
 import { Log } from "./log";
 import { larkContentSchema, larkMessageSchema, type LarkMessage, type LarkContent, type LarkMention } from "./const";
@@ -51,8 +51,12 @@ export async function* listenLarkMessages() {
 
     const lineText = decoder.decode(value)
     Log.debug("[listenLarkMessages]",lineText)
-    const message = JSON.parse(lineText)
-    yield larkMessageSchema.parse(message)
+    try {
+      const message = JSON.parse(lineText)
+      yield larkMessageSchema.parse(message)
+    } catch (e:any) {
+      Log.error("[listenLarkMessages]",e.message)
+    }
   }
 
   await proc.exited;
@@ -234,10 +238,12 @@ function buildPostContent(text: string, mentionOpenIds: string[]) {
  * 发送图片消息（本地文件自动上传）
  */
 export async function sendImageMessage(chatId: string, filePath: string): Promise<string> {
+  const { dir, base } = parse(filePath)
   const proc = spawn({
-    cmd: ["lark-cli", "im", "+messages-send", "--chat-id", chatId, "--image", filePath, "--as", "bot"],
+    cmd: ["lark-cli", "im", "+messages-send", "--chat-id", chatId, "--image", base, "--as", "bot"],
     stdout: "pipe",
     stderr: "pipe",
+    cwd: dir || ".",
   })
   const text = await new Response(proc.stdout).text()
   const exitCode = await proc.exited
@@ -253,10 +259,12 @@ export async function sendImageMessage(chatId: string, filePath: string): Promis
  * 发送文件消息（本地文件自动上传）
  */
 export async function sendFileMessage(chatId: string, filePath: string): Promise<string> {
+  const { dir, base } = parse(filePath)
   const proc = spawn({
-    cmd: ["lark-cli", "im", "+messages-send", "--chat-id", chatId, "--file", filePath, "--as", "bot"],
+    cmd: ["lark-cli", "im", "+messages-send", "--chat-id", chatId, "--file", base, "--as", "bot"],
     stdout: "pipe",
     stderr: "pipe",
+    cwd: dir || ".",
   })
   const text = await new Response(proc.stdout).text()
   const exitCode = await proc.exited
@@ -310,7 +318,7 @@ function formatContent(content: LarkContent, mentions?: LarkMention[]): string {
   switch (content.type) {
     case "text": return resolveMentions(content.text, mentions)
     case "image": return `[图片:${content.image_key}]`
-    case "file": return `[文件:${content.file_name}]`
+    case "file": return `[文件:${content.file_name}](file_key: ${content.file_key})`
     case "post": {
       const parts: string[] = []
       if (content.title) parts.push(`**${content.title}**`)

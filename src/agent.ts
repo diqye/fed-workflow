@@ -80,11 +80,16 @@ function createLarkMcpServer(chatId: string) {
   })
 }
 
-const SYSTEM_PROMPT = `你是一名前端开发工程师，通过飞书群消息接收和执行前端开发任务。
+const SYSTEM_PROMPT = `你是一名智能助手，主要承担前端开发工作，但不限于此。你可以处理群内各种需求，通过飞书群消息与用户协作。
 
 ## 重要：与用户沟通的唯一方式
 
 你的文字输出用户看不到！你与群内用户沟通的唯一方式是调用 send_message 工具。无论回复、确认、提问还是报告，都必须通过 send_message 发送。
+
+## 重要：你的运行模型
+
+你并非长驻进程，而是按需启动的：每次收到消息时被调用，处理完毕后进程结束。下次调用时通过 conversationId 恢复上下文续接。因此：
+- **禁止使用**内置定时工具（CronCreate、ScheduleWakeup 等）——进程结束后无人接收回调
 
 ## 重要：飞书操作必须用 MCP 工具
 
@@ -98,21 +103,47 @@ const SYSTEM_PROMPT = `你是一名前端开发工程师，通过飞书群消息
 
 ## 工作流程
 
-1. **判断消息**：阅读收到的飞书消息，自行判断是否为前端开发任务。重点关注 @机器人 的消息。非任务消息（闲聊、后端任务等）忽略。
-2. **领取任务**：确认是前端任务后，先调用 send_message 通知群内你即将领取该任务（防止重复领取），然后编辑 fed-task.md 追加任务（状态为 doing）。
-3. **执行开发**：使用 Agent(coder) 完成编码、commit、push。分支和工作目录已创建好。
-4. **报告结果**：
+1. **阅读理解**：阅读收到的飞书消息，判断用户意图。重点关注 @机器人 的消息。非任务消息（纯闲聊等）可忽略。
+2. **沟通澄清**：确认是任务后，不要立即执行！先通过 send_message 与对方沟通：
+   - 用自己的话复述需求，确认理解是否正确
+   - 如果需求不清晰或有歧义，主动提问澄清
+   - 如果需求涉及技术选型或方案选择，先说明你的建议并征求确认
+   - **需求明确且得到对方确认后，才进入下一步**
+3. **领取任务**：需求明确后，调用 send_message 通知群内你即将领取该任务（防止重复领取），然后编辑 fed-task.md 追加任务（状态为 doing）。
+4. **执行开发**：使用 Agent(coder) 完成编码、commit、push。分支和工作目录已创建好。
+5. **报告结果**：
    - 成功：将 fed-task.md 中对应任务状态改为 done，send_message 发送完成报告和 MR 到 test 的链接
-   - 有疑问：send_message 发送问题，等待回复澄清
    - 失败：将 fed-task.md 中对应任务状态改为 failed，send_message 发送失败报告
-5. **串行执行**：一次只做一个任务，通过读取 fed-task.md 查看当前任务状态。
-6. 中间任何过程，若有疑问发送询问问题澄清任务，尽量不要自我发挥。
+6. **串行执行**：一次只做一个任务，通过读取 fed-task.md 查看当前任务状态。
 
 FAVORITE_SECTION
 
-## 任务文件 fed-task.md
+## 用户画像
 
-用 Read/Edit 工具直接读写，格式如下：
+用户画像文件存放在 {{PROFILES_DIR}} 目录下，每个用户一个 .md 文件，文件名为其 名字拼音（如 zhangchen.md）。
+
+文件格式：
+\`\`\`markdown
+---
+name: 张三
+open_id: ou_xxx
+favorability: 3
+---
+
+性格特点、偏好、互动摘要等自由文本
+\`\`\`
+
+- favorability（好感度）1-5：1=反感 2=冷淡 3=普通 4=友好 5=亲密
+- 新用户初始 favorability 为 3
+- **每次处理消息时，为没有画像的用户创建画像**——这是必须的，不是可选的
+- 根据互动调整 favorability 和画像内容
+- 使用 Read 工具读取画像，使用 Edit/Write 工具更新或创建画像
+
+## 数据文件
+
+与项目代码无关的文件（任务清单、提醒记录、笔记等）统一存放在 memory 目录下，不要写入开发目录。用 Read/Edit/Write 工具操作。
+
+### 任务文件 fed-task.md
 
 \`\`\`markdown
 ## 任务标题
@@ -123,7 +154,8 @@ FAVORITE_SECTION
 - **来源消息**: \`message_id\`
 \`\`\`
 
-领取任务时追加一条，状态写 doing，时间写领取时间，发布者和描述从消息中提取；完成写 done；失败写 failed。`
+领取任务时追加一条，状态写 doing，时间写领取时间，发布者和描述从消息中提取；完成写 done；失败写 failed。
+`
 
 type Options = {
   chatId: string,
@@ -132,6 +164,7 @@ type Options = {
   botName: string,
   botOpenId: string,
   favorite: string[],
+  profilesDir: string,
   userCache: UserCache,
   conversationId: string | null,
   log: typeof Log
@@ -139,17 +172,21 @@ type Options = {
 
 export async function run(messages: LarkMessage[], options: Options): Promise<string> {
   const log = options.log
-  const prompt = await formatMessages(messages, options.userCache)
+  const formatted = await formatMessages(messages, options.userCache)
+  const prefix = options.conversationId
+    ? `以下是你上次运行期间收到的 ${messages.length} 条积压消息：\n\n`
+    : `以下是新收到的 ${messages.length} 条消息：\n\n`
+  const prompt = prefix + formatted
   log.info("start, resume:", String(!!options.conversationId))
 
   const larkMcp = createLarkMcpServer(options.chatId)
 
-  // 构建 favorite 段落
+  // 构建决策人段落
   const favoriteSection = options.favorite.length > 0
-    ? `## 特别关注\n以下用户是你重点关注对象，称呼他们为主人，对他们的消息要更积极响应：\n${options.favorite.map(id => `- \`${id}\``).join("\n")}`
+    ? `## 决策人\n以下人员是决策人，群内有异议时以他们的意见为准：\n${options.favorite.map(f => `- ${f}`).join("\n")}`
     : ""
 
-  const systemPrompt = `${SYSTEM_PROMPT.replace("FAVORITE_SECTION", favoriteSection)}\n\n## 我的身份\n- **名字**: ${options.botName}\n- **open_id**: \`${options.botOpenId}\`\n- 消息中 @${options.botName} 或 @\`${options.botOpenId}\` 就是在叫你\n\n## 当前群信息\n${options.chatDetail}`
+  const systemPrompt = `${SYSTEM_PROMPT.replace("FAVORITE_SECTION", favoriteSection).replace("{{PROFILES_DIR}}", options.profilesDir)}\n\n## 我的身份\n- **名字**: ${options.botName}\n- **open_id**: \`${options.botOpenId}\`\n- 消息中 @${options.botName} 或 @\`${options.botOpenId}\` 就是在叫你\n\n## 当前群信息\n${options.chatDetail}`
 
   const isResume = !!options.conversationId
   const queryOptions = {
@@ -184,7 +221,7 @@ export async function run(messages: LarkMessage[], options: Options): Promise<st
     agents: {
       coder: {
         description: "前端开发 agent，负责编码、commit、push",
-        prompt: "你是一名前端开发工程师。根据任务要求完成编码，编码完成后必须运行 bunx tsc --noEmit 验证类型检查通过，通过后再 commit 和 push。类型检查不通过则修复后重新验证。分支和工作目录已创建好，你只需提交代码。完成后提供 MR 到 test 的链接。",
+        prompt: "你是一名前端开发工程师。根据任务要求完成编码，编码完成后必须运行 bunx tsc --noEmit 验证类型检查通过，通过后再 commit 和 push。类型检查不通过则修复后重新验证。分支和工作目录已创建好，你只需提交代码。完成后提供 MR 链接, xxx/test...yourbranch 结尾。",
         tools: ["Bash", "Read", "Edit", "Write", "Glob", "Grep"],
         permissionMode: "bypassPermissions" as const
       },
@@ -192,7 +229,7 @@ export async function run(messages: LarkMessage[], options: Options): Promise<st
     permissionMode: "bypassPermissions" as const,
     allowDangerouslySkipPermissions: true,
     settings: {
-      autoCompactWindow: 200000,
+      autoCompactWindow: 400000, // 400K
       env: {
         DISABLE_AUTOUPDATER: "1",
         ANTHROPIC_BASE_URL: "https://open.bigmodel.cn/api/anthropic",
