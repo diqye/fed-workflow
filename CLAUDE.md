@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 bun install                    # 安装依赖
-bun run index.ts --config      # 启动（默认 fed-workflow.yaml）
+bun run index.ts               # 启动（默认 ~/.fed-workflow/config.yaml）
 bun run index.ts --init        # 创建配置文件模板
 bun run index.ts --list        # 查看飞书群组列表
 bunx tsc --noEmit              # 类型检查（开发完成后验证）
@@ -23,8 +23,9 @@ index.ts ──→ src/cli.ts (入口：CLI解析 + 消息调度循环)
               ├── src/config.ts  (YAML配置读写，自动回填)
               ├── src/lark.ts    (飞书API + 消息监听 + 格式化)
               ├── src/agent.ts   (Agent SDK 调用：MCP工具 + coder子agent)
+              ├── src/env.ts     (环境变量统一入口，禁止直接读 Bun.env)
               ├── src/const.ts   (Zod schema + 类型 + 常量)
-              └── src/log.ts     (分级日志，启动清空)
+              └── src/log.ts     (分级日志，按日期覆盖)
 ```
 
 **核心数据流**：`lark.ts:debounceMessages()` 防抖收集消息 → `cli.ts:main()` 按群分发 → `agent.ts:run()` 调用 Agent SDK 处理 → 结果通过 MCP `send_message` 回群
@@ -44,6 +45,7 @@ index.ts ──→ src/cli.ts (入口：CLI解析 + 消息调度循环)
 5. 不要想着局部最优解，敢于重构
 6. 减少死记硬背的东西
 7. 关注代码逻辑，代码风格无所谓
+8. 环境变量必须通过 src/env.ts 获取，禁止直接读 Bun.env
 
 ## About me
 

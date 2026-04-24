@@ -1,13 +1,13 @@
 import { join } from "path"
 import { mkdirSync } from "fs"
 import { FED_LOG_DIR } from "./const"
-import { LOG_LEVEL } from "./const"
+import { logLevel } from "./env"
 
 let logPath = ""
 
 export async function initLog() {
     mkdirSync(FED_LOG_DIR, { recursive: true })
-    const ts = new Date().toISOString().replace(/[T:]/g, "-").replace(/\..+/, "")
+    const ts = new Date().toISOString().slice(0, 10)
     logPath = join(FED_LOG_DIR, `log-${ts}.txt`)
 }
 
@@ -33,14 +33,17 @@ function log(...texts:string[]) {
 }
 
 const LEVELS: Record<string, number> = { debug: 0, info: 1, error: 2 }
-const currentLevel = LEVELS[LOG_LEVEL] ?? 0
+
+function currentLevel() {
+  return LEVELS[logLevel()] ?? 0
+}
 
 type LogFn = (...texts: string[]) => void
 
 function makeLog(prefix: string, level: string): LogFn {
     const lv = LEVELS[level]!
     return (...texts: string[]) => {
-        if(currentLevel > lv) return
+        if(currentLevel() > lv) return
         log(`[${level}]`, prefix, ...texts)
     }
 }

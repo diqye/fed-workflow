@@ -31,7 +31,6 @@ export async function main() {
             help: { type: "boolean" },
             list: { type: "boolean" },
             init: { type: "boolean" },
-            config: { type: "string" },
         }
     })
 
@@ -45,7 +44,6 @@ export async function main() {
             "--help                       print this messages",
             "--list                       view chat list",
             "--init                       create config template",
-            "--config           [path]    config file path (yaml)"
         ].join("\n"),version)
         return
     }
@@ -60,7 +58,7 @@ export async function main() {
         return
     }
 
-    const configPath = parsed.values.config ?? FED_CONFIG_PATH
+    const configPath = FED_CONFIG_PATH
 
     if(parsed.values.init) {
         if(existsSync(configPath)) {
@@ -102,6 +100,7 @@ export async function main() {
 
     // 自动填充缺失的 groupName / description
     for(const project of config.projects) {
+        mkdirSync(project.cwd, { recursive: true })
         try {
             if(!project.groupName || !project.description) {
                 const chatRaw = await fetchChatRaw(project.chatId)
@@ -111,26 +110,28 @@ export async function main() {
                 await updateProject(configPath, config, project.chatId, patch)
             }
         } catch(e) {
-            const msg = `群 ${project.chatId} 不存在或无权限访问，请检查配置`
-            console.error(msg)
-            Log.error(msg)
+            console.error(`群 ${project.chatId} 获取信息失败: ${e}`)
+            Log.error(`群 ${project.chatId} 获取信息失败: ${String(e)}`)
         }
         console.log(`项目: ${project.groupName ?? project.chatId}, cwd: ${project.cwd}, conversationId: ${project.conversationId ?? "新建"}`)
     }
 
     // 预填充用户缓存（通过群成员 API 获取名字）
-    const initialUsers: Record<string, string> = {}
-    for(const project of config.projects) {
+    const userCache = createUserCache({ [botInfo.open_id]: botInfo.name })
+
+    // 后台异步填充群成员（串行，不阻塞消息监听）
+    ;(async () => {
+      for(const project of config.projects) {
         try {
-            const members = await fetchChatMembers(project.chatId)
-            Object.assign(initialUsers, members)
+          const members = await fetchChatMembers(project.chatId)
+          userCache.put(members)
+          Log.info(`群成员缓存已填充: ${project.groupName ?? project.chatId}`)
         } catch(e) {
-            const msg = `获取群成员失败 ${project.chatId}，群可能不存在或无权限`
-            console.error(msg)
-            Log.error(msg)
+          Log.error(`获取群成员失败 ${project.chatId}: ${String(e)}`)
         }
-    }
-    const userCache = createUserCache({ ...initialUsers, [botInfo.open_id]: botInfo.name })
+      }
+    })()
+
     const projectMap = new Map(config.projects.map(p => [p.chatId, p]))
     const groupStates = new Map<string, GroupState>()
 

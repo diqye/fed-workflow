@@ -53,6 +53,7 @@ export async function* listenLarkMessages() {
     Log.debug("[listenLarkMessages]",lineText)
     try {
       const message = JSON.parse(lineText)
+      if (message.header?.event_type !== "im.message.receive_v1") continue
       yield larkMessageSchema.parse(message)
     } catch (e:any) {
       Log.error("[listenLarkMessages]",e.message)
@@ -103,8 +104,8 @@ async function larkApi(method: string, path: string, opts?: { params?: Record<st
  */
 export async function fetchBotInfo(): Promise<{ name: string; open_id: string }> {
   const raw = await larkApi("GET", "/open-apis/bot/v3/info/")
-  const { bot } = JSON.parse(raw)
-  return { name: bot.app_name, open_id: bot.open_id }
+  const bot = JSON.parse(raw)?.bot
+  return { name: bot?.app_name ?? "bot", open_id: bot?.open_id ?? "" }
 }
 
 /**
@@ -120,15 +121,15 @@ export async function fetchChatList() {
  */
 export async function fetchChatDetail(chatId: string): Promise<string> {
   const raw = await larkApi("GET", `/open-apis/im/v1/chats/${chatId}`)
-  const { data } = JSON.parse(raw)
+  const data = JSON.parse(raw)?.data
   const lines = [
-    `**${data.name}**`,
-    `- **类型**: ${data.chat_type === "private" ? "私有" : "公开"}`,
-    `- **模式**: ${data.chat_mode === "group" ? "群聊" : "单聊"}`,
-    `- **描述**: ${data.description || "无"}`,
-    `- **群主**: \`${data.owner_id}\``,
-    `- **成员数**: ${data.user_count}`,
-    `- **机器人**: ${data.bot_count}`,
+    `**${data?.name ?? chatId}**`,
+    `- **类型**: ${data?.chat_type === "private" ? "私有" : "公开"}`,
+    `- **模式**: ${data?.chat_mode === "group" ? "群聊" : "单聊"}`,
+    `- **描述**: ${data?.description || "无"}`,
+    `- **群主**: \`${data?.owner_id ?? ""}\``,
+    `- **成员数**: ${data?.user_count ?? "?"}`,
+    `- **机器人**: ${data?.bot_count ?? "?"}`,
   ]
   return lines.join("\n")
 }
@@ -138,8 +139,8 @@ export async function fetchChatDetail(chatId: string): Promise<string> {
  */
 export async function fetchChatRaw(chatId: string): Promise<{ name: string; description: string }> {
   const raw = await larkApi("GET", `/open-apis/im/v1/chats/${chatId}`)
-  const { data } = JSON.parse(raw)
-  return { name: data.name, description: data.description || "" }
+  const data = JSON.parse(raw)?.data
+  return { name: data?.name ?? chatId, description: data?.description ?? "" }
 }
 
 /**
@@ -149,13 +150,13 @@ export async function fetchUserDetail(openId: string): Promise<string> {
   const raw = await larkApi("GET", `/open-apis/contact/v3/users/${openId}`, {
     params: { user_id_type: "open_id" },
   })
-  const { data } = JSON.parse(raw)
-  const user = data.user
+  const data = JSON.parse(raw)?.data
+  const user = data?.user
   const lines = [
-    `**${user.name}**`,
-    `- **open_id**: \`${user.open_id}\``,
-    `- **英文名**: ${user.en_name || "无"}`,
-    `- **描述**: ${user.description || "无"}`,
+    `**${user?.name ?? openId}**`,
+    `- **open_id**: \`${user?.open_id ?? openId}\``,
+    `- **英文名**: ${user?.en_name || "无"}`,
+    `- **描述**: ${user?.description || "无"}`,
   ]
   return lines.join("\n")
 }
@@ -165,9 +166,9 @@ export async function fetchUserDetail(openId: string): Promise<string> {
  */
 export async function fetchChatMembers(chatId: string): Promise<Record<string, string>> {
   const raw = await larkApi("GET", `/open-apis/im/v1/chats/${chatId}/members`)
-  const { data } = JSON.parse(raw)
+  const data = JSON.parse(raw)?.data
   const result: Record<string, string> = {}
-  for (const item of data.items ?? []) {
+  for (const item of data?.items ?? []) {
     if (item.member_id && item.name) {
       result[item.member_id] = item.name
     }
@@ -178,14 +179,16 @@ export async function fetchChatMembers(chatId: string): Promise<Record<string, s
 /**
  * 创建用户名字缓存，未命中时返回 open_id
  */
-export function createUserCache(initial?: Record<string, string>): UserCache {
+export function createUserCache(initial?: Record<string, string>): UserCache & { put(map: Record<string, string>): void } {
   const cache = new Map<string, string>(Object.entries(initial ?? {}))
   return {
     async getName(openId: string): Promise<string> {
       const cached = cache.get(openId)
       if (cached) return cached
-      // bot 身份无法调通讯录接口，返回 open_id
       return openId
+    },
+    put(map: Record<string, string>) {
+      for (const [k, v] of Object.entries(map)) cache.set(k, v)
     },
   }
 }

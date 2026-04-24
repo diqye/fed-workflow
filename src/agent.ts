@@ -1,7 +1,7 @@
 import { query, createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { LarkMessage } from "./const";
-import { ZHIPU_TOKEN } from "./const";
+import { zhipuToken } from "./env";
 import { formatMessages, fetchChatDetail, fetchUserDetail, fetchMessageResource, sendImageMessage, sendFileMessage, sendMessage, type UserCache } from "./lark";
 import { Log } from "./log";
 
@@ -110,9 +110,9 @@ const SYSTEM_PROMPT = `你是一名智能助手，主要承担前端开发工作
    - 如果需求涉及技术选型或方案选择，先说明你的建议并征求确认
    - **需求明确且得到对方确认后，才进入下一步**
 3. **领取任务**：需求明确后，调用 send_message 通知群内你即将领取该任务（防止重复领取），然后编辑 fed-task.md 追加任务（状态为 doing）。
-4. **执行开发**：使用 Agent(coder) 完成编码、commit、push。分支和工作目录已创建好。
+4. **执行开发**：**禁止直接编码！必须使用 Agent(coder) 完成编码、commit、push。** 分支和工作目录已创建好。
 5. **报告结果**：
-   - 成功：将 fed-task.md 中对应任务状态改为 done，send_message 发送完成报告和 MR 到 test 的链接
+   - 成功：将 fed-task.md 中对应任务状态改为 done，send_message 发送完成报告和 coder 返回的 MR 链接
    - 失败：将 fed-task.md 中对应任务状态改为 failed，send_message 发送失败报告
 6. **串行执行**：一次只做一个任务，通过读取 fed-task.md 查看当前任务状态。
 
@@ -199,29 +199,29 @@ export async function run(messages: LarkMessage[], options: Options): Promise<st
       "web-search-prime": {
         type: "http" as const,
         url: "https://open.bigmodel.cn/api/mcp/web_search_prime/mcp",
-        headers: { Authorization: `Bearer ${ZHIPU_TOKEN}` },
+        headers: { Authorization: `Bearer ${zhipuToken()}` },
       },
       "zai-mcp-server": {
         type: "stdio" as const,
         command: "bunx",
         args: ["-y", "@z_ai/mcp-server"],
-        env: { Z_AI_API_KEY: ZHIPU_TOKEN },
+        env: { Z_AI_API_KEY: zhipuToken() },
       },
       zread: {
         type: "http" as const,
         url: "https://open.bigmodel.cn/api/mcp/zread/mcp",
-        headers: { Authorization: `Bearer ${ZHIPU_TOKEN}` },
+        headers: { Authorization: `Bearer ${zhipuToken()}` },
       },
       "web-reader": {
         type: "http" as const,
         url: "https://open.bigmodel.cn/api/mcp/web_reader/mcp",
-        headers: { Authorization: `Bearer ${ZHIPU_TOKEN}` },
+        headers: { Authorization: `Bearer ${zhipuToken()}` },
       },
     },
     agents: {
       coder: {
         description: "前端开发 agent，负责编码、commit、push",
-        prompt: "你是一名前端开发工程师。根据任务要求完成编码，编码完成后必须运行 bunx tsc --noEmit 验证类型检查通过，通过后再 commit 和 push。类型检查不通过则修复后重新验证。分支和工作目录已创建好，你只需提交代码。完成后提供 MR 链接, xxx/test...yourbranch 结尾。",
+        prompt: "你是一名前端开发工程师。根据任务要求完成编码，编码完成后必须运行 bunx tsc --noEmit 验证类型检查通过，通过后再 commit 和 push。类型检查不通过则修复后重新验证。分支和工作目录已创建好，你只需提交代码。完成后提供 MR 链接，**MR 目标分支必须是 test，不是 master**，链接格式：{repo_url}/git/merges/create/test...{your_branch}",
         tools: ["Bash", "Read", "Edit", "Write", "Glob", "Grep"],
         permissionMode: "bypassPermissions" as const
       },
@@ -233,7 +233,7 @@ export async function run(messages: LarkMessage[], options: Options): Promise<st
       env: {
         DISABLE_AUTOUPDATER: "1",
         ANTHROPIC_BASE_URL: "https://open.bigmodel.cn/api/anthropic",
-        ANTHROPIC_AUTH_TOKEN: ZHIPU_TOKEN,
+        ANTHROPIC_AUTH_TOKEN: zhipuToken(),
         API_TIMEOUT_MS: "3000000",
         CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
         ANTHROPIC_MODEL: "glm-5.1",

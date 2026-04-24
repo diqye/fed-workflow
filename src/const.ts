@@ -142,9 +142,6 @@ export type LarkMessage = z.output<typeof larkMessageSchema>
  */
 
 
-export const LOG_LEVEL = Bun.env["LOG_LEVEL"] ?? "info"
-
-export const ZHIPU_TOKEN = Bun.env["zhipu_token"] ?? ""
 
 export const FED_DIR = join(homedir(), ".fed-workflow")
 export const FED_CONFIG_PATH = join(FED_DIR, "config.yaml")
