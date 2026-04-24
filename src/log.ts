@@ -9,6 +9,7 @@ export async function initLog() {
     mkdirSync(FED_LOG_DIR, { recursive: true })
     const ts = new Date().toISOString().slice(0, 10)
     logPath = join(FED_LOG_DIR, `log-${ts}.txt`)
+    await Bun.write(logPath, "")
 }
 
 function createLogStream() {

@@ -2,7 +2,7 @@ import { query, createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk"
 import { z } from "zod";
 import type { LarkMessage } from "./const";
 import { zhipuToken } from "./env";
-import { formatMessages, fetchChatDetail, fetchUserDetail, fetchMessageResource, sendImageMessage, sendFileMessage, sendMessage, type UserCache } from "./lark";
+import { formatMessages, fetchChatDetail, fetchMessageResource, sendImageMessage, sendFileMessage, sendMessage, type UserCache } from "./lark";
 import { Log } from "./log";
 
 /**
@@ -19,15 +19,6 @@ function createLarkMcpServer(chatId: string) {
         {},
         async () => {
           const result = await fetchChatDetail(chatId)
-          return { content: [{ type: "text" as const, text: result }] }
-        },
-      ),
-      tool(
-        "fetch_user_detail",
-        "获取飞书用户详情，返回姓名、open_id 等信息",
-        { open_id: z.string().describe("用户 open_id") },
-        async (args) => {
-          const result = await fetchUserDetail(args.open_id)
           return { content: [{ type: "text" as const, text: result }] }
         },
       ),
@@ -95,7 +86,6 @@ const SYSTEM_PROMPT = `你是一名智能助手，主要承担前端开发工作
 
 所有飞书相关操作必须使用提供的 MCP 工具，禁止通过 Bash 调用 lark-cli：
 - 获取群详情 → fetch_chat_detail
-- 获取用户详情 → fetch_user_detail
 - 下载消息资源 → fetch_message_resource（下载图片或文件，仅当任务确实需要查看内容时才下载）
 - 发送消息 → send_message（文本 + @人）
 - 发送图片 → send_image（发送本地图片文件）
@@ -172,7 +162,7 @@ type Options = {
 
 export async function run(messages: LarkMessage[], options: Options): Promise<string> {
   const log = options.log
-  const formatted = await formatMessages(messages, options.userCache)
+  const formatted = await formatMessages(messages, options.userCache, options.chatId)
   const prefix = options.conversationId
     ? `以下是你上次运行期间收到的 ${messages.length} 条积压消息：\n\n`
     : `以下是新收到的 ${messages.length} 条消息：\n\n`

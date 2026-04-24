@@ -63,16 +63,19 @@ export async function* listenLarkMessages() {
   await proc.exited;
 }
 
-export type UserCache = { getName(openId: string): Promise<string> }
+export type UserCache = {
+  getName(openId: string, chatId?: string): Promise<string>
+  put(map: Record<string, string>): void
+}
 
 /**
  * 将消息列表美化为 markdown
  */
-export async function formatMessages(messages: LarkMessage[], userCache: UserCache): Promise<string> {
+export async function formatMessages(messages: LarkMessage[], userCache: UserCache, chatId?: string): Promise<string> {
   const lines = await Promise.all(messages.map(async (m, i) => {
     const msg = m.event.message
     const openId = m.event.sender.sender_id.open_id
-    const name = await userCache.getName(openId)
+    const name = await userCache.getName(openId, chatId ?? msg.chat_id)
     const time = new Date(Number(msg.create_time)).toLocaleString("zh-CN")
     const chatType = msg.chat_type === "p2p" ? "私聊" : "群聊"
     const content = tryParseContent(msg.content, msg.mentions)
@@ -177,14 +180,29 @@ export async function fetchChatMembers(chatId: string): Promise<Record<string, s
 }
 
 /**
- * 创建用户名字缓存，未命中时返回 open_id
+ * 创建用户名字缓存，cache miss 时自动拉取指定群成员
  */
-export function createUserCache(initial?: Record<string, string>): UserCache & { put(map: Record<string, string>): void } {
+export function createUserCache(initial?: Record<string, string>): UserCache {
   const cache = new Map<string, string>(Object.entries(initial ?? {}))
+  const fetchedChats = new Set<string>()
+
   return {
-    async getName(openId: string): Promise<string> {
+    async getName(openId: string, chatId?: string): Promise<string> {
       const cached = cache.get(openId)
       if (cached) return cached
+
+      // cache miss: 拉取该群成员（每个群只拉一次）
+      if (chatId && !fetchedChats.has(chatId)) {
+        fetchedChats.add(chatId)
+        try {
+          const members = await fetchChatMembers(chatId)
+          for (const [k, v] of Object.entries(members)) cache.set(k, v)
+          Log.info(`群成员缓存已填充: ${chatId} (${Object.keys(members).length}人)`)
+        } catch {}
+        const name = cache.get(openId)
+        if (name) return name
+      }
+
       return openId
     },
     put(map: Record<string, string>) {

@@ -1,13 +1,23 @@
 import { run } from "./agent";
 import { debounceMessages, fetchChatList, fetchChatRaw, fetchChatMembers, fetchBotInfo, createUserCache } from "./lark";
 import { initLog, Log } from "./log";
-import { loadConfig, saveConfig, updateProject, type Config, type ProjectConfig } from "./config";
+import { loadConfig, saveConfig, updateProject, addProject, type Config, type ProjectConfig } from "./config";
 import { parseArgs } from "util"
 import { existsSync, mkdirSync } from "fs"
-import { PROFILES_DIR, FED_DIR, FED_CONFIG_PATH } from "./const"
+import { join } from "path"
+import { PROFILES_DIR, FED_DIR, FED_CONFIG_PATH, FED_PROJECTS_DIR } from "./const"
 import type { LarkMessage } from "./const"
 
 const MAX_MESSAGES_PER_RUN = 50
+
+/** 从飞书消息中提取纯文本内容 */
+function parseMessageText(msg: LarkMessage): string | null {
+  try {
+    const obj = JSON.parse(msg.event.message.content)
+    if (obj.text && typeof obj.text === "string") return obj.text
+  } catch {}
+  return null
+}
 
 function buildChatDetail(project: ProjectConfig): string {
   const lines = [
@@ -67,11 +77,15 @@ export async function main() {
         }
         mkdirSync(FED_DIR, { recursive: true })
         const template: Config = {
+            env: {
+              LOG_LEVEL: "info",
+              zhipu_token: "xxxx",
+            },
             projects: [
                 {
                     chatId: "oc_xxx",
                     cwd: "/path/to/project",
-                    favorite: ["秦振龙 称呼为哥"],
+                    favorite: ["vallino 称呼为哥"],
                 },
             ],
         }
@@ -98,41 +112,29 @@ export async function main() {
     const botInfo = await fetchBotInfo()
     Log.info("bot:", botInfo.name, botInfo.open_id)
 
-    // 自动填充缺失的 groupName / description
+    // 验证群可访问性，自动填充 groupName / description
+    const activeProjects: ProjectConfig[] = []
     for(const project of config.projects) {
-        mkdirSync(project.cwd, { recursive: true })
+        if(project.disabled) continue
         try {
-            if(!project.groupName || !project.description) {
-                const chatRaw = await fetchChatRaw(project.chatId)
-                const patch: Record<string, string> = {}
-                if(!project.groupName) patch.groupName = chatRaw.name
-                if(!project.description) patch.description = chatRaw.description
-                await updateProject(configPath, config, project.chatId, patch)
-            }
+            const chatRaw = await fetchChatRaw(project.chatId)
+            const patch: Record<string, string> = {}
+            if(!project.groupName) patch.groupName = chatRaw.name
+            if(!project.description) patch.description = chatRaw.description
+            if(Object.keys(patch).length > 0) await updateProject(configPath, config, project.chatId, patch)
+            mkdirSync(project.cwd, { recursive: true })
+            activeProjects.push(project)
+            console.log(`项目: ${project.groupName ?? project.chatId}, cwd: ${project.cwd}, conversationId: ${project.conversationId ?? "新建"}`)
         } catch(e) {
-            console.error(`群 ${project.chatId} 获取信息失败: ${e}`)
-            Log.error(`群 ${project.chatId} 获取信息失败: ${String(e)}`)
+            console.error(`群 ${project.groupName ?? project.chatId}(${project.chatId}) 不可访问，已标记 disabled: ${e}`)
+            Log.error(`群 ${project.chatId} 不可访问，已标记 disabled: ${String(e)}`)
+            await updateProject(configPath, config, project.chatId, { disabled: true })
         }
-        console.log(`项目: ${project.groupName ?? project.chatId}, cwd: ${project.cwd}, conversationId: ${project.conversationId ?? "新建"}`)
     }
 
-    // 预填充用户缓存（通过群成员 API 获取名字）
     const userCache = createUserCache({ [botInfo.open_id]: botInfo.name })
 
-    // 后台异步填充群成员（串行，不阻塞消息监听）
-    ;(async () => {
-      for(const project of config.projects) {
-        try {
-          const members = await fetchChatMembers(project.chatId)
-          userCache.put(members)
-          Log.info(`群成员缓存已填充: ${project.groupName ?? project.chatId}`)
-        } catch(e) {
-          Log.error(`获取群成员失败 ${project.chatId}: ${String(e)}`)
-        }
-      }
-    })()
-
-    const projectMap = new Map(config.projects.map(p => [p.chatId, p]))
+    const projectMap = new Map(activeProjects.map(p => [p.chatId, p]))
     const groupStates = new Map<string, GroupState>()
 
     function getGroupState(chatId: string): GroupState {
@@ -196,7 +198,34 @@ export async function main() {
     for await (const messages of debounceMessages()) {
         for(const msg of messages) {
             const chatId = msg.event.message.chat_id
-            if(!projectMap.has(chatId)) continue
+
+            // 未配置的群：检查是否 /init 命令
+            if(!projectMap.has(chatId)) {
+              const text = parseMessageText(msg)
+              const initMatch = text?.match(/^\/init\s+(.+)$/)
+              if(!initMatch) continue
+
+              const favorite = initMatch[1]!
+              const cwd = join(FED_PROJECTS_DIR, chatId)
+              mkdirSync(cwd, { recursive: true })
+
+              const project: ProjectConfig = { chatId, cwd, favorite: [favorite] }
+
+              // 尝试拉取群名称和描述
+              try {
+                const chatRaw = await fetchChatRaw(chatId)
+                project.groupName = chatRaw.name
+                project.description = chatRaw.description
+              } catch(e) {
+                Log.error(`自动配置获取群信息失败 ${chatId}: ${String(e)}`)
+              }
+
+              await addProject(configPath, config, project)
+              projectMap.set(chatId, project)
+              Log.info(`自动配置新群: ${project.groupName ?? chatId}, cwd: ${cwd}`)
+              console.log(`自动配置新群: ${project.groupName ?? chatId}, cwd: ${cwd}`)
+              continue
+            }
 
             const state = getGroupState(chatId)
             state.pending.push(msg)

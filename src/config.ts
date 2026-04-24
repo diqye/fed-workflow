@@ -10,6 +10,8 @@ export type ProjectConfig = {
   description?: string
   /** 决策人，群内有异议时以这些人的意见为准。如 "秦振龙 称呼为哥" */
   favorite?: string[]
+  /** 群不可访问时自动置 true，恢复时删掉此行即可 */
+  disabled?: boolean
 }
 
 export type Config = {
@@ -39,5 +41,13 @@ export async function updateProject(path: string, config: Config, chatId: string
   const project = config.projects.find(p => p.chatId === chatId)
   if (!project) return
   Object.assign(project, patch)
+  await saveConfig(path, config)
+}
+
+/**
+ * 新增项目配置并保存
+ */
+export async function addProject(path: string, config: Config, project: ProjectConfig): Promise<void> {
+  config.projects.push(project)
   await saveConfig(path, config)
 }

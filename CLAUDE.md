@@ -16,6 +16,58 @@ bun run index.ts --list        # 查看飞书群组列表
 bunx tsc --noEmit              # 类型检查（开发完成后验证）
 ```
 
+## Usage
+
+### 1. 初始化
+
+```bash
+bun run index.ts --init
+```
+
+生成 `~/.fed-workflow/config.yaml`，编辑填入实际的 `zhipu_token`：
+
+```yaml
+env:
+  LOG_LEVEL: info
+  zhipu_token: your_token_here
+projects:
+  - chatId: oc_xxx
+    cwd: /path/to/project
+    favorite:
+      - 张三 称呼为三哥
+```
+
+### 2. 群内自动配置
+
+未配置的群，发送以下消息即可自动注册：
+
+```
+/init 张三 称呼为三哥
+```
+
+会自动创建项目目录 `~/.fed-workflow/projects/{chatId}`，拉取群名称/描述，写入配置文件。
+
+### 3. 配置字段说明
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `chatId` | 是 | 飞书群 ID（`oc_` 开头） |
+| `cwd` | 是 | 项目工作目录 |
+| `favorite` | 否 | 决策人列表，群内有异议时以他们的意见为准 |
+| `groupName` | 否 | 群名称，启动时自动拉取填充 |
+| `description` | 否 | 群描述，启动时自动拉取填充 |
+| `conversationId` | 否 | Agent 会话 ID，自动回填，无需手动设置 |
+
+`env` 字段中的环境变量优先于系统环境变量。
+
+### 4. 日志
+
+日志文件：`~/.fed-workflow/log/log-{日期}.txt`，每天一个文件，重启覆盖。
+
+### 5. 用户画像
+
+用户画像文件：`~/.fed-workflow/profiles/{名字拼音}.md`，Agent 自动创建和维护。
+
 ## Architecture
 
 ```
@@ -32,7 +84,7 @@ index.ts ──→ src/cli.ts (入口：CLI解析 + 消息调度循环)
 
 **多群并行模型**：不同群并行，同群串行。`GroupState` 管理 pending/running 状态，同群任务完成后才处理下一批。
 
-**Agent 层**：`run()` 通过 `query()` 调用 Agent SDK，配置了 lark MCP 工具（群详情/用户/图片/发消息）+ 外部 MCP（zhipu 搜索/阅读），以及 coder 子 agent（编码+类型检查+commit+push）。会话续接通过 `conversationId` 自动回填配置。
+**Agent 层**：`run()` 通过 `query()` 调用 Agent SDK，配置了 lark MCP 工具（群详情/图片/发消息/发文件）+ 外部 MCP（zhipu 搜索/阅读），以及 coder 子 agent（编码+类型检查+commit+push）。会话续接通过 `conversationId` 自动回填配置。主 agent 禁止直接编码，必须通过 coder 子 agent 执行。
 
 **const.ts 设计**：Zod schema 定义飞书消息结构，`larkContentSchema` 用 `transform` 链将原始 JSON 解析为联合类型 `LarkContent`——这是组合子思维的体现：schema 既是验证器也是解析器，通过 `.transform()` 链式组合完成 decode。
 
