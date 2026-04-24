@@ -84,6 +84,11 @@ export async function main() {
 
     const config = await loadConfig(configPath)
 
+    // 注入配置中的环境变量（覆盖系统环境变量）
+    if (config.env) {
+      Object.assign(Bun.env, config.env)
+    }
+
     // 初始化日志（必须在其他 Log 调用之前）
     await initLog()
 

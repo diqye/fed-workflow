@@ -13,6 +13,7 @@ export type ProjectConfig = {
 }
 
 export type Config = {
+  env?: Record<string, string>
   projects: ProjectConfig[]
 }
 
