@@ -1,6 +1,6 @@
 # fed-workflow
 
-基于 [Anthropic Agent SDK](https://github.com/anthropics/claude-agent-sdk) 的前端工作流，监听飞书群消息，自动领取前端开发任务，编码、commit、push，反馈 MR 链接。
+基于 [Anthropic Agent SDK](https://github.com/anthropics/claude-agent-sdk) 的群组智能助手。以飞书群为单位，为每个群提供独立的 Agent，承担开发、写作、研究等多种角色任务，提供出色的生产力。
 
 ## 依赖
 
@@ -38,60 +38,61 @@ lark-cli api GET /open-apis/bot/v3/info/ --as bot
 | `im:message:readonly` | 读取消息 |
 | `im:message:send_as_bot` | 发送消息 |
 | `im:resource` | 下载图片/文件 |
-| `contact:user.base:readonly` | 查询用户信息（MCP 工具） |
 
-## 初始化配置
+## 快速开始
+
+### 1. 初始化
 
 ```bash
-# 创建默认配置文件 fed-workflow.yaml
 bun run index.ts --init
+```
 
-# 指定配置文件路径
-bun run index.ts --init --config /path/to/my-config.yaml
+生成 `~/.fed-workflow/config.yaml`，编辑填入实际的 `zhipu_token`：
+
+```yaml
+env:
+  LOG_LEVEL: info
+  zhipu_token: your_token_here
+projects:
+  - chatId: oc_xxx
+    cwd: /path/to/project
+    favorite:
+      - 张三 称呼为三哥
+```
+
+### 2. 群内自动配置
+
+未配置的群，发送以下消息即可自动注册：
+
+```
+/init 张三 称呼为三哥
+```
+
+自动创建项目目录 `~/.fed-workflow/projects/{chatId}`，拉取群名称/描述，写入配置文件。
+
+### 3. 启动
+
+```bash
+bun run index.ts
 ```
 
 ## 配置文件
 
-YAML 格式，支持多个群组（项目），每个群独立工作目录、会话、关注列表。
-
-```yaml
-log: /var/log/fed-workflow.log
-
-projects:
-  - chatId: oc_d2286cdb784ff2eb457964c8db0d9a58
-    cwd: /data/user_home/devops/q
-    favorite:
-      - ou_e9f7c9b15d90d801cc3526de0a5cfcdd
-
-  - chatId: oc_aaa111222333
-    cwd: /data/user_home/devops/another-project
-    favorite:
-      - ou_xxx
-      - ou_yyy
-```
+配置文件路径：`~/.fed-workflow/config.yaml`，YAML 格式，支持多群，每个群独立工作目录、会话、决策人。
 
 ### 字段说明
 
 | 字段 | 必填 | 说明 |
 |------|------|------|
-| `log` | 否 | 日志文件全路径，启动时清空 |
+| `env` | 否 | 环境变量，优先于系统环境变量 |
 | `projects` | 是 | 项目列表 |
 | `projects[].chatId` | 是 | 飞书群 chat_id |
-| `projects[].cwd` | 是 | 项目工作目录，agent 在此目录下编码 |
-| `projects[].favorite` | 否 | 特别关注的用户 open_id 列表，这些人的消息会优先响应 |
-| `projects[].groupName` | 否 | 群名称，留空则程序启动时自动获取并回填 |
-| `projects[].description` | 否 | 群描述，留空则程序启动时自动获取并回填 |
-| `projects[].conversationId` | 否 | 会话 ID，留空则程序自动创建并回填（用于会话续接） |
-
-## 启动
-
-```bash
-# 使用默认配置文件 fed-workflow.yaml
-bun run index.ts --config
-
-# 指定配置文件
-bun run index.ts --config /path/to/my-config.yaml
-```
+| `projects[].cwd` | 是 | 项目工作目录，agent 在此目录下工作 |
+| `projects[].favorite` | 否 | 决策人列表，群内有异议时以他们的意见为准 |
+| `projects[].groupName` | 否 | 群名称，留空则启动时自动获取并回填 |
+| `projects[].description` | 否 | 群描述，留空则启动时自动获取并回填 |
+| `projects[].conversationId` | 否 | 会话 ID，自动创建并回填（用于会话续接） |
+| `projects[].disabled` | 否 | 群不可访问时自动标记为 true，恢复时删掉此行即可 |
 
 ## 其他命令
 
@@ -105,11 +106,10 @@ bun run index.ts --config /path/to/my-config.yaml
 ## 工作流程
 
 1. 程序监听飞书群消息
-2. 启动时通过群成员 API 预加载用户名字缓存
-3. 判断是否为前端开发任务（重点关注 @机器人 的消息）
-4. 确认任务后：`send_message` 通知群内领取 → 编辑 `fed-task.md` 追加任务
-5. 调用 coder agent 完成编码、commit、push
-6. 完成后更新任务状态，`send_message` 发送完成报告和 MR 链接
+2. 判断是否需要处理的任务（重点关注 @机器人 的消息）
+3. 确认任务后：`send_message` 通知群内领取 → 编辑 `fed-task.md` 追加任务
+4. 调用 coder agent 完成编码、commit、push
+5. 完成后更新任务状态，`send_message` 发送完成报告和 MR 链接
 
 ### 多群并行
 
@@ -121,7 +121,20 @@ bun run index.ts --config /path/to/my-config.yaml
 - 每个群维护独立的会话，`conversationId` 自动回填到配置文件
 - 重启后自动续接上次会话上下文
 
+### 用户画像
+
+- 画像是**全局的**：同一个人在不同群共享同一个画像文件
+- 画像记录对人的感受和印象，像真人一样有感情，不同的人态度不同
+- 画像文件存放在 `~/.fed-workflow/profiles/` 下
+
+### 日志
+
+- 日志文件：`~/.fed-workflow/log/log-{日期}.txt`
+- 每天一个文件，重启覆盖
+
 ## 环境变量
+
+环境变量优先从配置文件 `env` 字段读取，没有再从系统获取。
 
 | 变量 | 必填 | 说明 |
 |------|------|------|
