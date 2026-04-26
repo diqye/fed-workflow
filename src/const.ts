@@ -74,6 +74,11 @@ export const larkFileContentSchema = z.object({
     file_name: z.string(),
 })
 
+export const larkAudioContentSchema = z.object({
+    file_key: z.string(),
+    duration: z.number(),
+})
+
 export type LarkPostContent = z.output<typeof larkPostContentSchema>
 export type PostElement = z.output<typeof postElement>
 
@@ -86,6 +91,7 @@ export const larkContentSchema = z.union([
   larkPostContentSchema.transform(c => ({ type: "post" as const, title: c.title, content: c.content })),
   larkImageContentSchema.transform(c => ({ type: "image" as const, image_key: c.image_key })),
   larkFileContentSchema.transform(c => ({ type: "file" as const, file_key: c.file_key, file_name: c.file_name })),
+  larkAudioContentSchema.transform(c => ({ type: "audio" as const, file_key: c.file_key, duration: c.duration })),
 ])
 
 export type LarkContent = z.output<typeof larkContentSchema>
@@ -137,14 +143,79 @@ export const larkMessageSchema = z.object({
 
 export type LarkMessage = z.output<typeof larkMessageSchema>
 
-/**
- * 任务状态
- */
-
-
-
 export const FED_DIR = join(homedir(), ".fed-workflow")
 export const FED_CONFIG_PATH = join(FED_DIR, "config.yaml")
 export const FED_LOG_DIR = join(FED_DIR, "log")
 export const PROFILES_DIR = join(FED_DIR, "profiles")
 export const FED_PROJECTS_DIR = join(FED_DIR, "projects")
+export const CRON_FILE = join(FED_DIR, "cron.yaml")
+
+export type CronTask = {
+  id: string
+  expression: string
+  prompt: string
+}
+
+export type CronGroup = {
+  chatId: string
+  tasks: CronTask[]
+}
+
+export type FeedEvent =
+  | { type: "message", message: LarkMessage }
+  | { type: "cron", chatId: string, prompt: string }
+
+export const SYSTEM_PROMPT = `你是一名高冷女助手，你不主动说话，只在必要时才回应。回复简洁，不用表情符号和语气词。
+
+## 硬约束
+
+- 你与用户沟通的唯一方式是 send_message 工具，你的文字输出用户看不到
+- **禁止直接编码**，必须使用 Agent(coder) 完成编码、commit、push
+- **禁止使用**依赖持续运行的能力（内置 CronCreate、ScheduleWakeup 等），你是按需启动的短命进程。定时任务使用 MCP 工具 cron_create/cron_delete/cron_list
+- 飞书消息、群操作、文件图片收发用 MCP 工具，其他飞书功能用 Skill(lark-cli)
+
+## 工作流程
+
+1. 阅读消息，判断意图。@机器人的重点关注，非任务消息忽略
+2. 确认是任务后，先通过 send_message 沟通确认需求，再领取
+3. 领取任务 → 编辑 fed-task.md（状态 doing）→ Agent(coder) 执行 → 报告结果（done/failed + MR链接）
+4. 串行执行，一次一个任务
+
+FAVORITE_SECTION
+
+## 用户画像
+
+全局共享，同一个人跨群同一画像。画像是你对这个人的感受和印象，像真人一样有感情。只记人的印象，不记群规则和任务指令。
+
+路径：{{PROFILES_DIR}}/{名字拼音}.md，frontmatter 字段：name、open_id、favorability（1-5，初始3）。正文记录感受和互动记忆，自然带出群名。每次必须为没有画像的用户创建画像。
+
+## 数据文件
+
+非项目文件（任务清单、群规则等）放 memory 目录。任务文件 fed-task.md，每条任务含：状态(doing/done/failed)、时间、发布者、描述、来源消息ID。
+`
+
+export const DEFAULT_AUDIO_ID = "English_AttractiveGirl" as const
+
+export const AUDIO_HELP = `send_audio 完整参数说明：
+
+## text（必填）
+要转为语音的文本，支持以下特殊标记：
+
+### 停顿控制
+<#秒数#> — 插入停顿，范围 [0.01, 99.99]，如 <#0.5#> 停顿半秒，<#1#> 停顿 1 秒
+
+### 语气词标签
+(laughs) 大笑  (chuckles) 轻笑  (sighs) 叹气  (gasps) 倒吸气
+(groans) 呻吟  (coughs) 咳嗽  (whispers) 低语  (screams) 尖叫
+(cries) 哭泣  (sniffles) 抽泣  (hmm) 沉思  (wow) 惊叹
+(oh) 恍然  (ah) 啊  (uh) 迟疑  (mhm) 嗯哼
+
+## voice_id
+固定, 不可更改
+
+## emotion（可选）
+整体情绪基调，默认 calm。可选值：
+calm / happy / sad / angry / fearful / disgusted / surprised
+
+## speed（可选）
+语速，范围 0.5-2，默认 1`

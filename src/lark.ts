@@ -3,7 +3,9 @@ import { tmpdir } from "os";
 import { join, parse } from "path";
 import { mkdir } from "fs/promises";
 import { Log } from "./log";
-import { larkContentSchema, larkMessageSchema, type LarkMessage, type LarkContent, type LarkMention } from "./const";
+import { minimaxToken } from "./env";
+import type { CronManager } from "./cronManager";
+import { larkContentSchema, larkMessageSchema, type LarkMessage, type LarkContent, type LarkMention, type FeedEvent, DEFAULT_AUDIO_ID } from "./const";
 
 /**
  * 飞书消息事件
@@ -348,6 +350,7 @@ function formatContent(content: LarkContent, mentions?: LarkMention[]): string {
     case "text": return resolveMentions(content.text, mentions)
     case "image": return `[图片:${content.image_key}]`
     case "file": return `[文件:${content.file_name}](file_key: ${content.file_key})`
+    case "audio": return `[语音消息: ${content.duration}ms](file_key: ${content.file_key})`
     case "post": {
       const parts: string[] = []
       if (content.title) parts.push(`**${content.title}**`)
@@ -371,40 +374,135 @@ function formatContent(content: LarkContent, mentions?: LarkMention[]): string {
   }
 }
 
-/*
- * for await (const messages of debounceMessages()) {
- *   // 3s 内无新消息才走到这里
- * }
+/**
+ * 消息 + cron 事件统一 Feed
+ * 飞书消息自动收集并防抖，cron 事件通过 cronManager 回调注入
+ *
+ * for await (const events of createFeed(cronManager)) { ... }
  */
-export async function* debounceMessages(delay = 3000) {
-  let staged: LarkMessage[] = []
+export async function* createFeed(cronManager: CronManager, delay = 3000) {
+  let staged: FeedEvent[] = []
   let wake: (() => void) | null = null
 
-  // 后台持续收集消息，不受 yield 暂停影响
+  // 后台持续收集飞书消息
   ;(async () => {
     for await (const message of listenLarkMessages()) {
-      staged.push(message)
-      const w = wake as (() => void) | null
-      wake = null
-      w?.()
+      staged.push({ type: "message", message })
+      const w = wake as (() => void) | null; wake = null; w?.()
     }
   })()
 
+  // 监听 cron 触发
+  cronManager.onFire((chatId, prompt) => {
+    staged.push({ type: "cron", chatId, prompt })
+    const w = wake as (() => void) | null; wake = null; w?.()
+  })
+
   while (true) {
-    // 等待至少一条消息
+    // 等待至少一个事件
     if (staged.length === 0) {
-      await new Promise<void>((r) => { wake = r })
+      await new Promise<void>(r => { wake = r })
     }
 
-    // debounce: delay 内无新消息则就绪
+    // 防抖：delay 内无新事件则就绪
     while (true) {
       const len = staged.length
-      await new Promise<void>((r) => setTimeout(r, delay))
+      await new Promise<void>(r => setTimeout(r, delay))
       if (staged.length === len) break
     }
 
-    const messages = staged
+    const events = staged
     staged = []
-    yield messages
+    yield events
+  }
+}
+
+/**
+ * TTS + 发送语音消息
+ * text → MiniMax TTS → mp3 → 飞书上传 → 发送语音消息
+ */
+export async function sendAudioMessage(
+  chatId: string,
+  text: string,
+  opts?: { voice_id?: string; emotion?: string; speed?: number }
+): Promise<string> {
+  const token = minimaxToken()
+  if (!token) throw new Error("MINIMAX_KEY 未配置")
+
+  // 1. 调 MiniMax TTS API
+  const resp = await fetch("https://api.minimaxi.com/v1/t2a_v2", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      model: "speech-2.8-hd",
+      text,
+      stream: false,
+      voice_setting: {
+        voice_id: opts?.voice_id ?? DEFAULT_AUDIO_ID,
+        speed: opts?.speed ?? 1,
+        vol: 1,
+        pitch: 0,
+        emotion: opts?.emotion ?? "calm",
+      },
+      audio_setting: {
+        format: "mp3",
+        sample_rate: 32000,
+        bitrate: 128000,
+        channel: 1,
+      },
+    }),
+  })
+
+  const result = await resp.json() as any
+  if (result.base_resp?.status_code !== 0) {
+    const msg = `语音合成失败: ${result.base_resp?.status_msg ?? "未知错误"}`
+    Log.error(msg)
+    throw new Error(msg)
+  }
+
+  // 2. hex 解码保存 mp3
+  const mp3Buffer = Buffer.from(result.data.audio, "hex")
+  const ts = Date.now()
+  const tmpMp3 = join(tmpdir(), `tts-${ts}.mp3`)
+  await Bun.write(tmpMp3, mp3Buffer)
+
+  try {
+    // 3. 上传 mp3 到飞书
+    const { dir, base } = parse(tmpMp3)
+    const uploadProc = spawn({
+      cmd: ["lark-cli", "api", "POST", "/open-apis/im/v1/files",
+            "--data", JSON.stringify({ file_type: "opus" }),
+            "--file", `file=${base}`, "--as", "bot"],
+      stdout: "pipe", stderr: "pipe",
+      cwd: dir,
+    })
+    const uploadText = await new Response(uploadProc.stdout).text()
+    const uploadExit = await uploadProc.exited
+    if (uploadExit !== 0) {
+      const err = await new Response(uploadProc.stderr).text()
+      throw new Error(`飞书上传失败: ${err}`)
+    }
+    const uploadResult = JSON.parse(uploadText)
+    const fileKey = uploadResult?.data?.file_key
+    if (!fileKey) throw new Error(`飞书上传返回异常: ${uploadText}`)
+
+    // 4. 发送语音消息
+    await larkApi("POST", "/open-apis/im/v1/messages", {
+      params: { receive_id_type: "chat_id" },
+      data: JSON.stringify({
+        receive_id: chatId,
+        msg_type: "audio",
+        content: JSON.stringify({ file_key: fileKey }),
+      }),
+    })
+
+    Log.info(`语音文件: ${tmpMp3}`)
+    return "语音消息已发送"
+  } catch (e) {
+    Log.error(`语音发送失败: ${String(e)}`)
+    throw e
   }
 }

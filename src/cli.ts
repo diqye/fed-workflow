@@ -1,7 +1,8 @@
 import { run } from "./agent";
-import { debounceMessages, fetchChatList, fetchChatRaw, fetchChatMembers, fetchBotInfo, createUserCache } from "./lark";
+import { createFeed, fetchChatList, fetchChatRaw, fetchBotInfo, createUserCache, formatMessages } from "./lark";
 import { initLog, Log } from "./log";
 import { loadConfig, saveConfig, updateProject, addProject, type Config, type ProjectConfig } from "./config";
+import { CronManager } from "./cronManager";
 import { parseArgs } from "util"
 import { existsSync, mkdirSync } from "fs"
 import { join } from "path"
@@ -28,8 +29,10 @@ function buildChatDetail(project: ProjectConfig): string {
 }
 
 type GroupState = {
-  pending: LarkMessage[]
+  pendingMessages: LarkMessage[]
+  pendingCrons: { prompt: string }[]
   running: boolean
+  isBacklog: boolean
 }
 
 export async function main() {
@@ -141,37 +144,56 @@ export async function main() {
     function getGroupState(chatId: string): GroupState {
         let state = groupStates.get(chatId)
         if(!state) {
-            state = { pending: [], running: false }
+            state = { pendingMessages: [], pendingCrons: [], running: false, isBacklog: false }
             groupStates.set(chatId, state)
         }
         return state
     }
 
-    async function startRun(chatId: string, state: GroupState, isBacklog: boolean) {
-        if(state.running || state.pending.length === 0) return
+    // 初始化 CronManager
+    const cronManager = new CronManager()
+
+    async function startRun(chatId: string, state: GroupState) {
+        if(state.running) return
+        if(state.pendingMessages.length === 0 && state.pendingCrons.length === 0) return
 
         const project = projectMap.get(chatId)
         if(!project) return
-
-        // 取所有待处理消息，超过上限则只取最新的 MAX_MESSAGES_PER_RUN 条
-        const allMsgs = state.pending
-        state.pending = []
-        const runMsgs = allMsgs.length > MAX_MESSAGES_PER_RUN
-            ? allMsgs.slice(-MAX_MESSAGES_PER_RUN)
-            : allMsgs
 
         state.running = true
         const chatDetail = buildChatDetail(project)
         const log = Log.scope(`${project.groupName ?? "unknown"}(${chatId})`)
 
-        log.info("startRun, msgs:", String(runMsgs.length), "conversationId:", project.conversationId ?? "null")
+        // 构建 prompt
+        const parts: string[] = []
+        const isBacklog = state.isBacklog
+        state.isBacklog = false
+
+        if (state.pendingCrons.length > 0) {
+          for (const c of state.pendingCrons) {
+            parts.push(`[定时任务触发] ${c.prompt}`)
+          }
+          state.pendingCrons = []
+        }
+        if (state.pendingMessages.length > 0) {
+          const allMsgs = state.pendingMessages
+          state.pendingMessages = []
+          const runMsgs = allMsgs.length > MAX_MESSAGES_PER_RUN
+              ? allMsgs.slice(-MAX_MESSAGES_PER_RUN)
+              : allMsgs
+          const label = isBacklog ? "上次运行期间积累的" : "新收到的"
+          const formatted = await formatMessages(runMsgs, userCache, chatId)
+          parts.push(`以下是${label} ${runMsgs.length} 条消息：\n\n${formatted}`)
+        }
+
+        const prompt = parts.join("\n\n")
+        log.info("startRun, conversationId:", project.conversationId ?? "null")
 
         try {
-            const sessionId = await run(runMsgs, {
+            const sessionId = await run(prompt, {
                 log,
                 chatId,
                 chatDetail,
-                isBacklog,
                 cwd: project.cwd,
                 botName: botInfo.name,
                 botOpenId: botInfo.open_id,
@@ -179,6 +201,7 @@ export async function main() {
                 profilesDir: PROFILES_DIR,
                 userCache,
                 conversationId: project.conversationId ?? null,
+                cronManager,
             })
 
             if(sessionId && sessionId !== project.conversationId) {
@@ -188,22 +211,28 @@ export async function main() {
             log.error("startRun error:", String(e))
         } finally {
             state.running = false
-            log.info("run completed, pending:", String(state.pending.length))
-            // run 完成后如果又有新消息积累，继续执行（标记为积压）
-            if(state.pending.length > 0) {
-                startRun(chatId, state, true)
+            log.info("run completed, pending msgs:", String(state.pendingMessages.length), "crons:", String(state.pendingCrons.length))
+            // run 完成后如果又有新事件积累，继续执行（标记为积压）
+            if(state.pendingMessages.length > 0 || state.pendingCrons.length > 0) {
+                state.isBacklog = true
+                startRun(chatId, state).catch(e => log.error(`递归 startRun error: ${String(e)}`))
             }
         }
     }
 
+    // 启动 feed
+    cronManager.loadAll()
+    const feed = createFeed(cronManager)
+
     console.log("开始监听消息")
-    for await (const messages of debounceMessages()) {
-        for(const msg of messages) {
-            const chatId = msg.event.message.chat_id
+    for await (const events of feed) {
+        for(const event of events) {
+          if (event.type === "message") {
+            const chatId = event.message.event.message.chat_id
 
             // 未配置的群：检查是否 /init 命令
             if(!projectMap.has(chatId)) {
-              const text = parseMessageText(msg)
+              const text = parseMessageText(event.message)
               const initMatch = text?.match(/^\/init\s+(.+)$/)
               if(!initMatch) continue
 
@@ -230,14 +259,18 @@ export async function main() {
             }
 
             const state = getGroupState(chatId)
-            state.pending.push(msg)
+            state.pendingMessages.push(event.message)
+          } else {
+            // cron event
+            const state = getGroupState(event.chatId)
+            state.pendingCrons.push({ prompt: event.prompt })
+          }
         }
 
-        // 对所有有消息的群，如果没有在运行则启动 run
-        for(const [chatId] of groupStates) {
-            const state = getGroupState(chatId)
-            if(state.pending.length > 0 && !state.running) {
-                startRun(chatId, state, false)
+        // 对所有有待处理事件的群，如果没有在运行则启动 run
+        for(const [chatId, state] of groupStates) {
+            if((state.pendingMessages.length > 0 || state.pendingCrons.length > 0) && !state.running) {
+                startRun(chatId, state).catch(e => Log.error(`startRun error ${chatId}: ${String(e)}`))
             }
         }
     }

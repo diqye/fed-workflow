@@ -6,3 +6,4 @@
 
 export const zhipuToken = () => Bun.env["zhipu_token"] ?? ""
 export const logLevel = () => Bun.env["LOG_LEVEL"] ?? "info"
+export const minimaxToken = () => Bun.env["MINIMAX_KEY"] ?? ""

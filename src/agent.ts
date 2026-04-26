@@ -1,14 +1,16 @@
 import { query, createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { LarkMessage } from "./const";
+import { SYSTEM_PROMPT, AUDIO_HELP } from "./const";
 import { zhipuToken } from "./env";
-import { formatMessages, fetchChatDetail, fetchMessageResource, sendImageMessage, sendFileMessage, sendMessage, type UserCache } from "./lark";
+import { fetchChatDetail, fetchMessageResource, sendImageMessage, sendFileMessage, sendAudioMessage, sendMessage, type UserCache } from "./lark";
 import { Log } from "./log";
+import type { CronManager } from "./cronManager";
 
 /**
  * 飞书工具
  */
-function createLarkMcpServer(chatId: string) {
+function createLarkMcpServer(chatId: string, cronManager: CronManager) {
   return createSdkMcpServer({
     name: "lark",
     version: "1.0.0",
@@ -67,38 +69,68 @@ function createLarkMcpServer(chatId: string) {
           return { content: [{ type: "text" as const, text: result }] }
         },
       ),
+      tool(
+        "send_audio",
+        "向当前群组发送语音消息（TTS 文本转语音）,支持插入 <#秒数#> — 插入停顿、(laughs) - 大笑。传 help=true 查看完整参数说明",
+        {
+          help: z.boolean().optional().describe("传 true 查看完整参数说明"),
+          text: z.string().optional().describe("要转为语音的文本"),
+          emotion: z.string().optional().describe("整体情绪，默认 calm"),
+          speed: z.number().optional().describe("语速 0.5-2，默认 1"),
+        },
+        async (args) => {
+          if (args.help) {
+            return { content: [{ type: "text" as const, text: AUDIO_HELP }] }
+          }
+          if (!args.text) {
+            return { content: [{ type: "text" as const, text: "缺少 text 参数" }] }
+          }
+          const result = await sendAudioMessage(chatId, args.text, {
+            emotion: args.emotion,
+            speed: args.speed,
+          })
+          return { content: [{ type: "text" as const, text: result }] }
+        },
+      ),
+      tool(
+        "cron_create",
+        "创建定时任务。将自然语言时间描述转换为 cron 表达式，如'每天早上9点'→'0 9 * * *'、'工作日下午3点'→'0 15 * * 1-5'",
+        {
+          expression: z.string().describe("cron 表达式，5位：分 时 日 月 周，如 0 9 * * * 表示每天9点"),
+          prompt: z.string().describe("触发时发给 agent 的提示文本"),
+        },
+        async (args) => {
+          const task = cronManager.create(chatId, args.expression, args.prompt)
+          return { content: [{ type: "text" as const, text: `定时任务已创建: id=${task.id}, expression="${task.expression}", prompt="${task.prompt}"` }] }
+        },
+      ),
+      tool(
+        "cron_delete",
+        "删除定时任务",
+        {
+          id: z.string().describe("要删除的定时任务 ID"),
+        },
+        async (args) => {
+          const ok = cronManager.delete(chatId, args.id)
+          return { content: [{ type: "text" as const, text: ok ? `定时任务 ${args.id} 已删除` : `定时任务 ${args.id} 不存在` }] }
+        },
+      ),
+      tool(
+        "cron_list",
+        "列出当前群的所有定时任务",
+        {},
+        async () => {
+          const tasks = cronManager.list(chatId)
+          if (tasks.length === 0) {
+            return { content: [{ type: "text" as const, text: "当前群没有定时任务" }] }
+          }
+          const lines = tasks.map(t => `- id: ${t.id}, expression: "${t.expression}", prompt: "${t.prompt}"`)
+          return { content: [{ type: "text" as const, text: `当前群定时任务 (${tasks.length})：\n${lines.join("\n")}` }] }
+        },
+      ),
     ],
   })
 }
-
-const SYSTEM_PROMPT = `你是一名高冷的前端开发助手。你不主动说话，只在必要时才回应。回复简洁，不用表情符号和语气词。
-
-## 硬约束
-
-- 你与用户沟通的唯一方式是 send_message 工具，你的文字输出用户看不到
-- **禁止直接编码**，必须使用 Agent(coder) 完成编码、commit、push
-- **禁止使用**内置定时工具（CronCreate、ScheduleWakeup 等），你是按需启动的短命进程
-- 飞书消息、群操作、文件图片收发用 MCP 工具，其他飞书功能用 Skill(lark-cli)
-
-## 工作流程
-
-1. 阅读消息，判断意图。@机器人的重点关注，非任务消息忽略
-2. 确认是任务后，先通过 send_message 沟通确认需求，再领取
-3. 领取任务 → 编辑 fed-task.md（状态 doing）→ Agent(coder) 执行 → 报告结果（done/failed + MR链接）
-4. 串行执行，一次一个任务
-
-FAVORITE_SECTION
-
-## 用户画像
-
-全局共享，同一个人跨群同一画像。画像是你对这个人的感受和印象，像真人一样有感情。只记人的印象，不记群规则和任务指令。
-
-路径：{{PROFILES_DIR}}/{名字拼音}.md，frontmatter 字段：name、open_id、favorability（1-5，初始3）。正文记录感受和互动记忆，自然带出群名。每次必须为没有画像的用户创建画像。
-
-## 数据文件
-
-非项目文件（任务清单、群规则等）放 memory 目录。任务文件 fed-task.md，每条任务含：状态(doing/done/failed)、时间、发布者、描述、来源消息ID。
-`
 
 type Options = {
   chatId: string,
@@ -106,23 +138,20 @@ type Options = {
   cwd: string,
   botName: string,
   botOpenId: string,
-  isBacklog: boolean,
   favorite: string[],
   profilesDir: string,
   userCache: UserCache,
   conversationId: string | null,
+  cronManager: CronManager,
   log: typeof Log
 }
 
-export async function run(messages: LarkMessage[], options: Options): Promise<string> {
+export async function run(prompt: string, options: Options): Promise<string> {
   const log = options.log
-  const formatted = await formatMessages(messages, options.userCache, options.chatId)
-  const label = options.isBacklog ? "上次运行期间积累的" : "新收到的"
-  const prompt = `以下是${label} ${messages.length} 条消息：\n\n` + formatted
   log.info("prompt:\n", prompt)
   log.info("start, resume:", String(!!options.conversationId))
 
-  const larkMcp = createLarkMcpServer(options.chatId)
+  const larkMcp = createLarkMcpServer(options.chatId, options.cronManager)
 
   // 构建决策人段落
   const favoriteSection = options.favorite.length > 0
@@ -187,7 +216,7 @@ export async function run(messages: LarkMessage[], options: Options): Promise<st
       },
       permissions: {
         allow: ["Bash"],
-        deny: ["WebSearch"],
+        deny: ["WebSearch", "CronCreate", "CronDelete", "CronList", "ScheduleWakeup"],
       },
       skipWebFetchPreflight: true,
       skipDangerousModePermissionPrompt: true,
@@ -196,13 +225,11 @@ export async function run(messages: LarkMessage[], options: Options): Promise<st
 
   const q = query({ prompt, options: queryOptions })
 
-  let resultText = ""
   let sessionId = ""
   let succeeded = false
 
   for await (const msg of q) {
     if (msg.type === "result" && msg.subtype === "success") {
-      resultText = msg.result
       sessionId = msg.session_id
       succeeded = true
       log.info("succeeded, sessionId:", sessionId)
