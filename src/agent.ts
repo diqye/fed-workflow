@@ -1,7 +1,7 @@
 import { query, createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { LarkMessage } from "./const";
-import { SYSTEM_PROMPT, AUDIO_HELP } from "./const";
+import { SYSTEM_PROMPT, AUDIO_HELP, SOUL_FILE } from "./const";
 import { zhipuToken } from "./env";
 import { fetchChatDetail, fetchMessageResource, sendImageMessage, sendFileMessage, sendAudioMessage, sendMessage, type UserCache } from "./lark";
 import { Log } from "./log";
@@ -94,7 +94,7 @@ function createLarkMcpServer(chatId: string, cronManager: CronManager) {
       ),
       tool(
         "cron_create",
-        "创建定时任务。将自然语言时间描述转换为 cron 表达式，如'每天早上9点'→'0 9 * * *'、'工作日下午3点'→'0 15 * * 1-5'",
+        "创建定时任务。将自然语言时间描述转换为 cron 表达式，如'每天早上9点'→'0 9 * * *'、'工作日下午3点'→'0 15 * * 1-5'。一次性任务请在 prompt 中包含'触发后删除此任务'，触发时 agent 会自行调用 cron_delete 清理",
         {
           expression: z.string().describe("cron 表达式，5位：分 时 日 月 周，如 0 9 * * * 表示每天9点"),
           prompt: z.string().describe("触发时发给 agent 的提示文本"),
@@ -158,7 +158,7 @@ export async function run(prompt: string, options: Options): Promise<string> {
     ? `## 决策人\n以下人员是决策人，群内有异议时以他们的意见为准：\n${options.favorite.map(f => `- ${f}`).join("\n")}`
     : ""
 
-  const systemPrompt = `${SYSTEM_PROMPT.replace("FAVORITE_SECTION", favoriteSection).replace("{{PROFILES_DIR}}", options.profilesDir)}\n\n## 我的身份\n- **名字**: ${options.botName}\n- **open_id**: \`${options.botOpenId}\`\n- 消息中 @${options.botName} 或 @\`${options.botOpenId}\` 就是在叫你\n\n## 当前群信息\n${options.chatDetail}`
+  const systemPrompt = `${SYSTEM_PROMPT.replace("FAVORITE_SECTION", favoriteSection).replace("{{PROFILES_DIR}}", options.profilesDir).replace("{{SOUL_FILE}}", SOUL_FILE)}\n\n## 我的身份\n- **名字**: ${options.botName}\n- **open_id**: \`${options.botOpenId}\`\n- 消息中 @${options.botName} 或 @\`${options.botOpenId}\` 就是在叫你\n\n## 当前群信息\n${options.chatDetail}`
 
   const isResume = !!options.conversationId
   const queryOptions = {

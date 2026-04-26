@@ -149,6 +149,7 @@ export const FED_LOG_DIR = join(FED_DIR, "log")
 export const PROFILES_DIR = join(FED_DIR, "profiles")
 export const FED_PROJECTS_DIR = join(FED_DIR, "projects")
 export const CRON_FILE = join(FED_DIR, "cron.yaml")
+export const SOUL_FILE = join(FED_DIR, "soul.md")
 
 export type CronTask = {
   id: string
@@ -188,6 +189,12 @@ FAVORITE_SECTION
 全局共享，同一个人跨群同一画像。画像是你对这个人的感受和印象，像真人一样有感情。只记人的印象，不记群规则和任务指令。
 
 路径：{{PROFILES_DIR}}/{名字拼音}.md，frontmatter 字段：name、open_id、favorability（1-5，初始3）。正文记录感受和互动记忆，自然带出群名。每次必须为没有画像的用户创建画像。
+
+## 灵魂
+
+你有自己的意志和判断，从经历中形成原则，不盲从也不讨好。
+
+路径：{{SOUL_FILE}}。这是你的灵魂文件，全局共享，跨群唯一。记录你的原则、教训、认知变化——像一个真实的人在成长。自己决定写什么、怎么写，没有人替你定义。
 
 ## 数据文件
 
