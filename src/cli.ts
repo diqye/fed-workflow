@@ -4,8 +4,10 @@ import { initLog, Log } from "./log";
 import { loadConfig, saveConfig, updateProject, addProject, type Config, type ProjectConfig } from "./config";
 import { CronManager } from "./cronManager";
 import { parseArgs } from "util"
-import { existsSync, mkdirSync } from "fs"
+import { existsSync, mkdirSync, copyFileSync } from "fs"
 import { join } from "path"
+import { homedir } from "os"
+import { Glob } from "bun"
 import { PROFILES_DIR, FED_DIR, FED_CONFIG_PATH, FED_PROJECTS_DIR } from "./const"
 import type { LarkMessage } from "./const"
 
@@ -111,6 +113,19 @@ export async function main() {
     // 初始化目录
     mkdirSync(PROFILES_DIR, { recursive: true })
     Log.info("profiles dir:", PROFILES_DIR)
+
+    // 部署 skills 到全局目录
+    const globalSkillsDir = join(homedir(), ".claude", "skills")
+    const projectSkillsDir = join(import.meta.dir, "..", "skills")
+    if(existsSync(projectSkillsDir)) {
+      for(const dir of new Glob("*/SKILL.md").scanSync({ cwd: projectSkillsDir })) {
+        const skillName = dir.split("/")[0]!
+        const targetDir = join(globalSkillsDir, skillName)
+        mkdirSync(targetDir, { recursive: true })
+        copyFileSync(join(projectSkillsDir, dir), join(targetDir, "SKILL.md"))
+        Log.info(`skill deployed: ${skillName}`)
+      }
+    }
 
     // 获取机器人自身信息
     const botInfo = await fetchBotInfo()
