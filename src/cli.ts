@@ -1,5 +1,5 @@
 import { run } from "./agent";
-import { createFeed, fetchChatList, fetchChatRaw, fetchBotInfo, createUserCache, formatMessages } from "./lark";
+import { createFeed, fetchChatList, fetchChatRaw, fetchBotInfo, createUserCache, formatMessages, sendMessage } from "./lark";
 import { initLog, Log } from "./log";
 import { loadConfig, saveConfig, updateProject, addProject, type Config, type ProjectConfig } from "./config";
 import { CronManager } from "./cronManager";
@@ -33,6 +33,7 @@ type GroupState = {
   pendingCrons: { prompt: string }[]
   running: boolean
   isBacklog: boolean
+  abortController: AbortController | null
 }
 
 export async function main() {
@@ -144,7 +145,7 @@ export async function main() {
     function getGroupState(chatId: string): GroupState {
         let state = groupStates.get(chatId)
         if(!state) {
-            state = { pendingMessages: [], pendingCrons: [], running: false, isBacklog: false }
+            state = { pendingMessages: [], pendingCrons: [], running: false, isBacklog: false, abortController: null }
             groupStates.set(chatId, state)
         }
         return state
@@ -161,6 +162,7 @@ export async function main() {
         if(!project) return
 
         state.running = true
+        state.abortController = new AbortController()
         const chatDetail = buildChatDetail(project)
         const log = Log.scope(`${project.groupName ?? "unknown"}(${chatId})`)
 
@@ -203,6 +205,7 @@ export async function main() {
                 userCache,
                 conversationId: project.conversationId ?? null,
                 cronManager,
+                abortController: state.abortController,
             })
 
             if(sessionId && sessionId !== project.conversationId) {
@@ -212,6 +215,7 @@ export async function main() {
             log.error("startRun error:", String(e))
         } finally {
             state.running = false
+            state.abortController = null
             log.info("run completed, pending msgs:", String(state.pendingMessages.length), "crons:", String(state.pendingCrons.length))
             // run 完成后如果又有新事件积累，继续执行（标记为积压）
             if(state.pendingMessages.length > 0 || state.pendingCrons.length > 0) {
@@ -231,31 +235,61 @@ export async function main() {
           if (event.type === "message") {
             const chatId = event.message.event.message.chat_id
 
-            // 未配置的群：检查是否 /init 命令
+            // 未配置或已禁用的群：检查是否 /init 命令
             if(!projectMap.has(chatId)) {
               const text = parseMessageText(event.message)
               const initMatch = text?.match(/^\/init\s+(.+)$/)
               if(!initMatch) continue
 
               const favorite = initMatch[1]!
-              const cwd = join(FED_PROJECTS_DIR, chatId)
-              mkdirSync(cwd, { recursive: true })
+              const existing = config.projects.find(p => p.chatId === chatId)
 
-              const project: ProjectConfig = { chatId, cwd, favorite: [favorite] }
-
-              // 尝试拉取群名称和描述
-              try {
-                const chatRaw = await fetchChatRaw(chatId)
-                project.groupName = chatRaw.name
-                project.description = chatRaw.description
-              } catch(e) {
-                Log.error(`自动配置获取群信息失败 ${chatId}: ${String(e)}`)
+              if(existing) {
+                // 已禁用的群：重新启用
+                mkdirSync(existing.cwd, { recursive: true })
+                try {
+                  const chatRaw = await fetchChatRaw(chatId)
+                  existing.groupName = chatRaw.name
+                  existing.description = chatRaw.description
+                } catch(e) {
+                  Log.error(`重新启用获取群信息失败 ${chatId}: ${String(e)}`)
+                }
+                await updateProject(configPath, config, chatId, { disabled: undefined, favorite: [favorite] })
+                existing.disabled = undefined
+                existing.favorite = [favorite]
+                chatNames.set(chatId, existing.groupName ?? chatId)
+                projectMap.set(chatId, existing)
+                Log.info(`重新启用群: ${existing.groupName ?? chatId}`)
+                console.log(`重新启用群: ${existing.groupName ?? chatId}`)
+              } else {
+                // 新群
+                const cwd = join(FED_PROJECTS_DIR, chatId)
+                mkdirSync(cwd, { recursive: true })
+                const project: ProjectConfig = { chatId, cwd, favorite: [favorite] }
+                try {
+                  const chatRaw = await fetchChatRaw(chatId)
+                  project.groupName = chatRaw.name
+                  project.description = chatRaw.description
+                } catch(e) {
+                  Log.error(`自动配置获取群信息失败 ${chatId}: ${String(e)}`)
+                }
+                await addProject(configPath, config, project)
+                projectMap.set(chatId, project)
+                Log.info(`自动配置新群: ${project.groupName ?? chatId}, cwd: ${cwd}`)
+                console.log(`自动配置新群: ${project.groupName ?? chatId}, cwd: ${cwd}`)
               }
+              continue
+            }
 
-              await addProject(configPath, config, project)
-              projectMap.set(chatId, project)
-              Log.info(`自动配置新群: ${project.groupName ?? chatId}, cwd: ${cwd}`)
-              console.log(`自动配置新群: ${project.groupName ?? chatId}, cwd: ${cwd}`)
+            // 已配置的群：检查是否 /stop 命令
+            const text = parseMessageText(event.message)
+            if(text === "/stop") {
+              const state = getGroupState(chatId)
+              if(state.running && state.abortController) {
+                state.abortController.abort()
+                Log.info(`收到 /stop 命令，终止群 ${chatId} 的任务`)
+                sendMessage(chatId, "任务已被手动终止").catch(e => Log.error(`发送终止通知失败: ${String(e)}`))
+              }
               continue
             }
 

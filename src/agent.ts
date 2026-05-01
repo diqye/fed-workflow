@@ -143,7 +143,8 @@ type Options = {
   userCache: UserCache,
   conversationId: string | null,
   cronManager: CronManager,
-  log: typeof Log
+  log: typeof Log,
+  abortController?: AbortController,
 }
 
 export async function run(prompt: string, options: Options): Promise<string> {
@@ -164,6 +165,7 @@ export async function run(prompt: string, options: Options): Promise<string> {
   const queryOptions = {
     resume: options.conversationId ?? undefined,
     continue: !isResume ? true : undefined,
+    abortController: options.abortController,
     cwd: options.cwd,
     systemPrompt: { type: "preset" as const, preset: "claude_code" as const, append: systemPrompt },
     mcpServers: {
