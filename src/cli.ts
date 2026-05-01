@@ -183,7 +183,8 @@ export async function main() {
               : allMsgs
           const label = isBacklog ? "上次运行期间积累的" : "新收到的"
           const formatted = await formatMessages(runMsgs, userCache, chatId)
-          parts.push(`以下是${label} ${runMsgs.length} 条消息：\n\n${formatted}`)
+          const backlogHint = isBacklog ? "\n\n注意：这些消息是你上轮运行期间收到的，部分可能已被你之前的回复覆盖，先回顾你已发过的回复再判断是否需要回应。" : ""
+          parts.push(`以下是${label} ${runMsgs.length} 条消息：\n\n${formatted}${backlogHint}`)
         }
 
         const prompt = parts.join("\n\n")
