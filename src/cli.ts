@@ -296,7 +296,7 @@ export async function main() {
               continue
             }
 
-            // 已配置的群：检查是否 /stop 命令
+            // 已配置的群：检查是否 /stop 或 /reset 命令
             const text = parseMessageText(event.message)
             if(text === "/stop") {
               const state = getGroupState(chatId)
@@ -304,6 +304,16 @@ export async function main() {
                 state.abortController.abort()
                 Log.info(`收到 /stop 命令，终止群 ${chatId} 的任务`)
                 sendMessage(chatId, "任务已被手动终止").catch(e => Log.error(`发送终止通知失败: ${String(e)}`))
+              }
+              continue
+            }
+            if(text === "/reset") {
+              const project = projectMap.get(chatId)
+              if(project?.conversationId) {
+                await updateProject(configPath, config, chatId, { conversationId: undefined })
+                project.conversationId = undefined
+                Log.info(`收到 /reset 命令，已清除群 ${chatId} 的会话`)
+                sendMessage(chatId, "会话已重置，下次对话将开启新 session").catch(e => Log.error(`发送重置通知失败: ${String(e)}`))
               }
               continue
             }

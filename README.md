@@ -76,6 +76,16 @@ projects:
 bun run index.ts
 ```
 
+## 群内指令
+
+在飞书群中直接发送以下指令，即可控制 Agent 行为：
+
+| 指令 | 说明 |
+|------|------|
+| `/init 决策人信息` | 自动配置新群，或重新启用已禁用的群。如 `/init 张三 称呼为三哥` |
+| `/stop` | 强制终止当前正在运行的任务 |
+| `/reset` | 重置会话，下次对话开启新 session（修改 hooks 等配置后使用） |
+
 ## 配置文件
 
 配置文件路径：`~/.fed-workflow/config.yaml`，YAML 格式，支持多群，每个群独立工作目录、会话、决策人。
@@ -108,7 +118,7 @@ bun run index.ts
 1. 程序监听飞书群消息
 2. 判断是否需要处理的任务（重点关注 @机器人 的消息）
 3. 确认任务后：`send_message` 通知群内领取 → 编辑 `fed-task.md` 追加任务
-4. 调用 coder agent 完成编码、commit、push
+4. 编码任务调用 coder agent 完成编码、commit、push
 5. 完成后更新任务状态，`send_message` 发送完成报告和 MR 链接
 
 ### 多群并行
@@ -120,12 +130,37 @@ bun run index.ts
 
 - 每个群维护独立的会话，`conversationId` 自动回填到配置文件
 - 重启后自动续接上次会话上下文
+- 修改 cwd 下的 `.claude/settings.json` 或 `.claude/settings.local.json`（如 hooks）后，需发送 `/reset` 开启新 session 才能生效
+
+### 定时任务
+
+- Agent 可通过 MCP 工具 `cron_create` / `cron_delete` / `cron_list` 管理定时任务
+- 定时任务按群隔离，持久化到 `~/.fed-workflow/cron.yaml`
+- 一次性任务：在 prompt 中包含"触发后删除此任务"，Agent 会自行调用 `cron_delete` 清理
+
+### 语音消息
+
+- Agent 可通过 `send_audio` MCP 工具发送语音消息（TTS 文本转语音）
+- 支持停顿控制 `<#秒数#>`、语气词标签 `(laughs)` `(sighs)` 等
+- 传 `help=true` 查看完整参数说明
 
 ### 用户画像
 
 - 画像是**全局的**：同一个人在不同群共享同一个画像文件
 - 画像记录对人的感受和印象，像真人一样有感情，不同的人态度不同
 - 画像文件存放在 `~/.fed-workflow/profiles/` 下
+
+### 灵魂
+
+- Agent 维护自己的灵魂文件 `~/.fed-workflow/soul.md`，全局共享
+- 记录原则、教训、认知变化——像一个真实的人在成长
+- Agent 自己决定写什么、怎么写
+
+### 素笔风格
+
+- 默认使用素笔（su-bi）风格说话和写文件，用户明确要求其他风格时除外
+- 素笔：短句、克制、留白，用细节说话，不解释，让读者自己感受
+- Skill 文件：`skills/su-bi/SKILL.md`，启动时自动部署到 `~/.claude/skills/su-bi/`
 
 ### 日志
 
@@ -139,4 +174,5 @@ bun run index.ts
 | 变量 | 必填 | 说明 |
 |------|------|------|
 | `zhipu_token` | 是 | 智谱 API Token |
+| `MINIMAX_KEY` | 否 | MiniMax TTS Token，用于语音消息 |
 | `LOG_LEVEL` | 否 | 日志级别，默认 `info`，可选 `debug` |
