@@ -1,4 +1,4 @@
-import { query, createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
+import { query, createSdkMcpServer, tool, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { LarkMessage } from "./const";
 import { SYSTEM_PROMPT, AUDIO_HELP, SOUL_FILE } from "./const";
@@ -167,6 +167,7 @@ export async function run(prompt: string, options: Options): Promise<string> {
     continue: !isResume ? true : undefined,
     abortController: options.abortController,
     cwd: options.cwd,
+    settingSources: ["project", "local"] as SettingSource[],
     systemPrompt: { type: "preset" as const, preset: "claude_code" as const, append: systemPrompt },
     mcpServers: {
       lark: larkMcp,
@@ -202,6 +203,7 @@ export async function run(prompt: string, options: Options): Promise<string> {
     },
     permissionMode: "bypassPermissions" as const,
     allowDangerouslySkipPermissions: true,
+    disallowedTools: ["WebSearch", "CronCreate", "CronDelete", "CronList", "ScheduleWakeup"],
     settings: {
       autoCompactWindow: 400000, // 400K
       env: {
@@ -216,12 +218,7 @@ export async function run(prompt: string, options: Options): Promise<string> {
         ANTHROPIC_DEFAULT_OPUS_MODEL: "glm-5.1",
         ANTHROPIC_DEFAULT_HAIKU_MODEL: "glm-4.5-air",
       },
-      permissions: {
-        allow: ["Bash"],
-        deny: ["WebSearch", "CronCreate", "CronDelete", "CronList", "ScheduleWakeup"],
-      },
       skipWebFetchPreflight: true,
-      skipDangerousModePermissionPrompt: true,
     },
   }
 
