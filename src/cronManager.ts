@@ -9,7 +9,17 @@ type OnFire = (chatId: string, prompt: string) => void
 function loadGroups(): CronGroup[] {
   if (!existsSync(CRON_FILE)) return []
   const text = readFileSync(CRON_FILE, "utf-8")
-  return YAML.parse(text) ?? []
+  const groups: CronGroup[] = YAML.parse(text) ?? []
+  // 兼容旧数据：无前缀自动加 "lark:"
+  let dirty = false
+  for (const g of groups) {
+    if (!g.chatId.includes(":")) {
+      g.chatId = `lark:${g.chatId}`
+      dirty = true
+    }
+  }
+  if (dirty) saveGroups(groups)
+  return groups
 }
 
 function saveGroups(groups: CronGroup[]) {

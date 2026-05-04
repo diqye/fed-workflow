@@ -1,5 +1,7 @@
 import { run } from "./agent";
-import { createFeed, fetchChatList, fetchChatRaw, fetchBotInfo, createUserCache, formatMessages, sendMessage } from "./lark";
+import { Channel } from "./message/channel";
+import type { Message, FeedEvent } from "./message/types";
+import { LarkImpl } from "./lark";
 import { initLog, Log } from "./log";
 import { loadConfig, saveConfig, updateProject, addProject, type Config, type ProjectConfig } from "./config";
 import { CronManager } from "./cronManager";
@@ -9,18 +11,8 @@ import { join } from "path"
 import { homedir } from "os"
 import { Glob } from "bun"
 import { PROFILES_DIR, FED_DIR, FED_CONFIG_PATH, FED_PROJECTS_DIR } from "./const"
-import type { LarkMessage } from "./const"
 
 const MAX_MESSAGES_PER_RUN = 50
-
-/** 从飞书消息中提取纯文本内容 */
-function parseMessageText(msg: LarkMessage): string | null {
-  try {
-    const obj = JSON.parse(msg.event.message.content)
-    if (obj.text && typeof obj.text === "string") return obj.text
-  } catch {}
-  return null
-}
 
 function buildChatDetail(project: ProjectConfig): string {
   const lines = [
@@ -31,7 +23,7 @@ function buildChatDetail(project: ProjectConfig): string {
 }
 
 type GroupState = {
-  pendingMessages: LarkMessage[]
+  pendingMessages: Message[]
   pendingCrons: { prompt: string }[]
   running: boolean
   isBacklog: boolean
@@ -63,14 +55,14 @@ export async function main() {
         ].join("\n"),version)
         return
     }
+
+    // 初始化 Channel
+    const channel = new Channel()
+    channel.addImpl(new LarkImpl(channel))
+
     if(parsed.values.list) {
-        const list = await fetchChatList()
-        console.log(list.data.items.map((a:any)=>{
-            return {
-                name: a.name,
-                chat_id: a.chat_id
-            }
-        }))
+        const list = await channel.fetchChatList()
+        console.log(list)
         return
     }
 
@@ -89,7 +81,7 @@ export async function main() {
             },
             projects: [
                 {
-                    chatId: "oc_xxx",
+                    chatId: "lark:oc_xxx",
                     cwd: "/path/to/project",
                     favorite: ["vallino 称呼为哥"],
                 },
@@ -127,19 +119,35 @@ export async function main() {
       }
     }
 
-    // 获取机器人自身信息
-    const botInfo = await fetchBotInfo()
-    Log.info("bot:", botInfo.name, botInfo.open_id)
+    // 预取各 channel 的 bot info
+    const botInfoMap = new Map<string, { name: string; id: string }>()
+    for (const impl of channel.getAllImpls()) {
+      const info = await impl.fetchBotInfo()
+      botInfoMap.set(impl.prefix, info)
+      Log.info(`bot [${impl.prefix}]:`, info.name, info.id)
+    }
 
     // 验证群可访问性，自动填充 groupName / description
+    // 旧配置 chatId 无前缀时，自动加 "lark:" 前缀
     const activeProjects: ProjectConfig[] = []
     for(const project of config.projects) {
         if(project.disabled) continue
+        // 兼容旧配置：无前缀自动加 "lark:"
+        if(!project.chatId.includes(":")) {
+          project.chatId = `lark:${project.chatId}`
+          await updateProject(configPath, config, project.chatId, {})
+        }
+        const { prefix } = Channel.parseChatId(project.chatId)
+        const impl = channel.getImpl(prefix)
+        if(!impl) {
+          console.error(`未知 channel: ${prefix}，跳过群 ${project.chatId}`)
+          continue
+        }
         try {
-            const chatRaw = await fetchChatRaw(project.chatId)
+            const chatInfo = await channel.fetchChatInfo(project.chatId)
             const patch: Record<string, string> = {}
-            if(!project.groupName) patch.groupName = chatRaw.name
-            if(!project.description) patch.description = chatRaw.description
+            if(!project.groupName) patch.groupName = chatInfo.name
+            if(!project.description) patch.description = chatInfo.description
             if(Object.keys(patch).length > 0) await updateProject(configPath, config, project.chatId, patch)
             mkdirSync(project.cwd, { recursive: true })
             activeProjects.push(project)
@@ -152,7 +160,7 @@ export async function main() {
     }
 
     const chatNames = new Map(activeProjects.map(p => [p.chatId, p.groupName ?? p.chatId]))
-    const userCache = createUserCache({ [botInfo.open_id]: botInfo.name }, chatNames)
+    channel.setChatNames(chatNames)
 
     const projectMap = new Map(activeProjects.map(p => [p.chatId, p]))
     const groupStates = new Map<string, GroupState>()
@@ -199,7 +207,7 @@ export async function main() {
               ? allMsgs.slice(-MAX_MESSAGES_PER_RUN)
               : allMsgs
           const label = isBacklog ? "上次运行期间积累的" : "新收到的"
-          const formatted = await formatMessages(runMsgs, userCache, chatId)
+          const formatted = await channel.formatMessages(runMsgs, chatId)
           const backlogHint = isBacklog ? "\n\n注意：这些消息是你上轮运行期间收到的，部分可能已被你之前的回复覆盖，先回顾你已发过的回复再判断是否需要回应。" : ""
           parts.push(`以下是${label} ${runMsgs.length} 条消息：\n\n${formatted}${backlogHint}`)
         }
@@ -207,17 +215,19 @@ export async function main() {
         const prompt = parts.join("\n\n")
         log.info("startRun, conversationId:", project.conversationId ?? "null")
 
+        const { prefix } = Channel.parseChatId(chatId)
+        const botInfo = botInfoMap.get(prefix)
+
         try {
             const sessionId = await run(prompt, {
                 log,
                 chatId,
                 chatDetail,
                 cwd: project.cwd,
-                botName: botInfo.name,
-                botOpenId: botInfo.open_id,
+                botName: botInfo?.name ?? "bot",
+                botOpenId: botInfo?.id ?? "",
                 favorite: project.favorite ?? [],
-                profilesDir: PROFILES_DIR,
-                userCache,
+                channel,
                 conversationId: project.conversationId ?? null,
                 cronManager,
                 abortController: state.abortController,
@@ -232,7 +242,6 @@ export async function main() {
             state.running = false
             state.abortController = null
             log.info("run completed, pending msgs:", String(state.pendingMessages.length), "crons:", String(state.pendingCrons.length))
-            // run 完成后如果又有新事件积累，继续执行（标记为积压）
             if(state.pendingMessages.length > 0 || state.pendingCrons.length > 0) {
                 state.isBacklog = true
                 startRun(chatId, state).catch(e => log.error(`递归 startRun error: ${String(e)}`))
@@ -242,30 +251,38 @@ export async function main() {
 
     // 启动 feed
     cronManager.loadAll()
-    const feed = createFeed(cronManager)
+    const feed = channel.feed(cronManager)
 
     console.log("开始监听消息")
     for await (const events of feed) {
         for(const event of events) {
           if (event.type === "message") {
-            const chatId = event.message.event.message.chat_id
+            const msg = event.message
+            const chatId = msg.chatId
+
+            // 私聊消息：回复不支持
+            if(msg.chatType === "private") {
+              channel.send(chatId, { type: "text", text: "不支持私聊消息，请在群聊中使用" })
+                .catch(e => Log.error(`发送私聊提示失败: ${String(e)}`))
+              continue
+            }
 
             // 未配置或已禁用的群：检查是否 /init 命令
             if(!projectMap.has(chatId)) {
-              const text = parseMessageText(event.message)
-              const initMatch = text?.match(/^\/init\s+(.+)$/)
+              const initMatch = msg.content.match(/^\/init\s+(.+)$/)
               if(!initMatch) continue
 
               const favorite = initMatch[1]!
               const existing = config.projects.find(p => p.chatId === chatId)
+              let groupName = chatId
 
               if(existing) {
                 // 已禁用的群：重新启用
                 mkdirSync(existing.cwd, { recursive: true })
                 try {
-                  const chatRaw = await fetchChatRaw(chatId)
-                  existing.groupName = chatRaw.name
-                  existing.description = chatRaw.description
+                  const chatInfo = await channel.fetchChatInfo(chatId)
+                  existing.groupName = chatInfo.name
+                  existing.description = chatInfo.description
                 } catch(e) {
                   Log.error(`重新启用获取群信息失败 ${chatId}: ${String(e)}`)
                 }
@@ -274,52 +291,58 @@ export async function main() {
                 existing.favorite = [favorite]
                 chatNames.set(chatId, existing.groupName ?? chatId)
                 projectMap.set(chatId, existing)
-                Log.info(`重新启用群: ${existing.groupName ?? chatId}`)
-                console.log(`重新启用群: ${existing.groupName ?? chatId}`)
+                groupName = existing.groupName ?? chatId
+                Log.info(`重新启用群: ${groupName}`)
+                console.log(`重新启用群: ${groupName}`)
               } else {
                 // 新群
                 const cwd = join(FED_PROJECTS_DIR, chatId)
                 mkdirSync(cwd, { recursive: true })
                 const project: ProjectConfig = { chatId, cwd, favorite: [favorite] }
                 try {
-                  const chatRaw = await fetchChatRaw(chatId)
-                  project.groupName = chatRaw.name
-                  project.description = chatRaw.description
+                  const chatInfo = await channel.fetchChatInfo(chatId)
+                  project.groupName = chatInfo.name
+                  project.description = chatInfo.description
                 } catch(e) {
                   Log.error(`自动配置获取群信息失败 ${chatId}: ${String(e)}`)
                 }
                 await addProject(configPath, config, project)
+                chatNames.set(chatId, project.groupName ?? chatId)
                 projectMap.set(chatId, project)
-                Log.info(`自动配置新群: ${project.groupName ?? chatId}, cwd: ${cwd}`)
-                console.log(`自动配置新群: ${project.groupName ?? chatId}, cwd: ${cwd}`)
+                groupName = project.groupName ?? chatId
+                Log.info(`自动配置新群: ${groupName}, cwd: ${cwd}`)
+                console.log(`自动配置新群: ${groupName}, cwd: ${cwd}`)
               }
+              channel.send(chatId, { type: "text", text: `配置成功：${groupName}` })
+                .catch(e => Log.error(`发送配置成功通知失败: ${String(e)}`))
               continue
             }
 
             // 已配置的群：检查是否 /stop 或 /reset 命令
-            const text = parseMessageText(event.message)
-            if(text === "/stop") {
+            if(msg.content === "/stop") {
               const state = getGroupState(chatId)
               if(state.running && state.abortController) {
                 state.abortController.abort()
                 Log.info(`收到 /stop 命令，终止群 ${chatId} 的任务`)
-                sendMessage(chatId, "任务已被手动终止").catch(e => Log.error(`发送终止通知失败: ${String(e)}`))
+                channel.send(chatId, { type: "text", text: "任务已被手动终止" })
+                  .catch(e => Log.error(`发送终止通知失败: ${String(e)}`))
               }
               continue
             }
-            if(text === "/reset") {
+            if(msg.content === "/reset") {
               const project = projectMap.get(chatId)
               if(project?.conversationId) {
                 await updateProject(configPath, config, chatId, { conversationId: undefined })
                 project.conversationId = undefined
                 Log.info(`收到 /reset 命令，已清除群 ${chatId} 的会话`)
-                sendMessage(chatId, "会话已重置，下次对话将开启新 session").catch(e => Log.error(`发送重置通知失败: ${String(e)}`))
+                channel.send(chatId, { type: "text", text: "会话已重置，下次对话将开启新 session" })
+                  .catch(e => Log.error(`发送重置通知失败: ${String(e)}`))
               }
               continue
             }
 
             const state = getGroupState(chatId)
-            state.pendingMessages.push(event.message)
+            state.pendingMessages.push(msg)
           } else {
             // cron event
             const state = getGroupState(event.chatId)

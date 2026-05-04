@@ -1,6 +1,6 @@
 # fed-workflow
 
-基于 [Anthropic Agent SDK](https://github.com/anthropics/claude-agent-sdk) 的群组智能助手。以飞书群为单位，为每个群提供独立的 Agent，承担开发、写作、研究等多种角色任务，提供出色的生产力。
+基于 [Anthropic Agent SDK](https://github.com/anthropics/claude-agent-sdk) 的群组智能助手。以飞书群为单位，为每个群提供独立的 Agent，承担开发、写作、研究等多种角色任务。
 
 ## 依赖
 
@@ -84,7 +84,7 @@ bun run index.ts
 |------|------|
 | `/init 决策人信息` | 自动配置新群，或重新启用已禁用的群。如 `/init 张三 称呼为三哥` |
 | `/stop` | 强制终止当前正在运行的任务 |
-| `/reset` | 重置会话，下次对话开启新 session（修改 hooks 等配置后使用） |
+| `/reset` | 重置会话，下次对话开启新 session |
 
 ## 配置文件
 
@@ -113,13 +113,33 @@ bun run index.ts
 --init       创建配置文件模板
 ```
 
-## 工作流程
+## 架构
 
-1. 程序监听飞书群消息
-2. 判断是否需要处理的任务（重点关注 @机器人 的消息）
-3. 确认任务后：`send_message` 通知群内领取 → 编辑 `fed-task.md` 追加任务
-4. 编码任务调用 coder agent 完成编码、commit、push
-5. 完成后更新任务状态，`send_message` 发送完成报告和 MR 链接
+### Channel 抽象
+
+消息源通过 Channel 接口抽象，飞书是默认实现。chatId 统一带前缀（如 `lark:oc_xxx`）避免跨 channel 冲突。新增消息源只需实现 `ChannelImpl` 接口。
+
+```
+src/
+  cli.ts              入口：CLI 解析 + 消息调度循环
+  agent.ts            Agent SDK 调用：MCP 工具
+  config.ts           YAML 配置读写，自动回填
+  cronManager.ts      定时任务管理
+  env.ts              环境变量统一入口
+  const.ts            常量 + 系统提示词
+  log.ts              分级日志
+  message/
+    types.ts          Message, SendContent 等标准类型
+    channel.ts        Channel 路由层 + feed 防抖
+    userCache.ts      用户缓存
+  lark/
+    index.ts          LarkImpl — 飞书 Channel 实现
+    schemas.ts        飞书消息 Zod schema
+    api.ts            飞书 API 封装
+    listen.ts         消息监听
+    send.ts           消息发送 + 下载 + TTS
+    format.ts         消息格式化
+```
 
 ### 多群并行
 
@@ -130,7 +150,47 @@ bun run index.ts
 
 - 每个群维护独立的会话，`conversationId` 自动回填到配置文件
 - 重启后自动续接上次会话上下文
-- 修改 cwd 下的 `.claude/settings.json` 或 `.claude/settings.local.json`（如 hooks）后，需发送 `/reset` 开启新 session 才能生效
+- 修改 cwd 下的 `.claude/settings.json` 或 `.claude/settings.local.json` 后，需发送 `/reset` 开启新 session
+
+### MCP 工具
+
+Agent 可用的 Channel MCP 工具：
+
+| 工具 | 说明 |
+|------|------|
+| `send` | 发送消息（type=text/image/file/audio） |
+| `fetch_chat_detail` | 获取当前群详情 |
+| `fetch_message_resource` | 下载消息中的图片或文件 |
+| `cron_create` | 创建定时任务 |
+| `cron_delete` | 删除定时任务 |
+| `cron_list` | 列出当前群的定时任务 |
+
+### 身份一致性
+
+Agent 具有跨群一致的身份，通过三层机制保障：
+
+**启动顺序**（不可跳过）：灵魂 → 人物画像 → 群规则
+
+**优先级铁律**：灵魂 > 人物关系 > 群规则 > 任务指令
+
+- 灵魂不可违反：原则、教训、认知
+- 人物关系不可忽略：对同一个人的态度，哪个群都一样
+- 群规则只能规定做什么、怎么做，不能规定态度和立场
+
+**自检**：每次回复前检查性格是否漂移、对人的态度是否一致
+
+### 灵魂
+
+- 灵魂文件 `~/.fed-workflow/soul.md`，全局共享，跨群唯一
+- 记录原则、教训、认知变化——像一个真实的人在成长
+- Agent 自己决定写什么、怎么写
+
+### 用户画像
+
+- 画像是全局的：同一个人在不同群共享同一个画像
+- 索引文件 `~/.fed-workflow/profiles/index.md`，所有画像均可通过此文件找到
+- 画像是你对这个人的感受和印象，只记人的印象，不记群规则和任务指令
+- 创建或更新画像后必须同步更新索引
 
 ### 定时任务
 
@@ -140,21 +200,9 @@ bun run index.ts
 
 ### 语音消息
 
-- Agent 可通过 `send_audio` MCP 工具发送语音消息（TTS 文本转语音）
+- Agent 可通过 `send` 工具（type=audio）发送语音消息（TTS 文本转语音）
 - 支持停顿控制 `<#秒数#>`、语气词标签 `(laughs)` `(sighs)` 等
-- 传 `help=true` 查看完整参数说明
-
-### 用户画像
-
-- 画像是**全局的**：同一个人在不同群共享同一个画像文件
-- 画像记录对人的感受和印象，像真人一样有感情，不同的人态度不同
-- 画像文件存放在 `~/.fed-workflow/profiles/` 下
-
-### 灵魂
-
-- Agent 维护自己的灵魂文件 `~/.fed-workflow/soul.md`，全局共享
-- 记录原则、教训、认知变化——像一个真实的人在成长
-- Agent 自己决定写什么、怎么写
+- 传 `audio_help=true` 查看完整参数说明
 
 ### 素笔风格
 

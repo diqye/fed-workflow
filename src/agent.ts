@@ -1,18 +1,18 @@
 import { query, createSdkMcpServer, tool, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import type { LarkMessage } from "./const";
-import { SYSTEM_PROMPT, AUDIO_HELP, SOUL_FILE } from "./const";
+import { SYSTEM_PROMPT, AUDIO_HELP, SOUL_FILE, PROFILES_INDEX } from "./const";
 import { zhipuToken } from "./env";
-import { fetchChatDetail, fetchMessageResource, sendImageMessage, sendFileMessage, sendAudioMessage, sendMessage, type UserCache } from "./lark";
 import { Log } from "./log";
 import type { CronManager } from "./cronManager";
+import type { Channel } from "./message/channel";
+import type { UserCache } from "./message/userCache";
 
 /**
- * 飞书工具
+ * Channel MCP 工具
  */
-function createLarkMcpServer(chatId: string, cronManager: CronManager) {
+function createChannelMcpServer(channel: Channel, chatId: string, cronManager: CronManager) {
   return createSdkMcpServer({
-    name: "lark",
+    name: "channel",
     version: "1.0.0",
     tools: [
       tool(
@@ -20,13 +20,13 @@ function createLarkMcpServer(chatId: string, cronManager: CronManager) {
         "获取当前群组详情，返回群名、类型、描述、成员数等信息",
         {},
         async () => {
-          const result = await fetchChatDetail(chatId)
+          const result = await channel.fetchChatDetail(chatId)
           return { content: [{ type: "text" as const, text: result }] }
         },
       ),
       tool(
         "fetch_message_resource",
-        "下载飞书消息中的图片或文件，返回本地文件路径",
+        "下载消息中的图片或文件，返回本地文件路径",
         {
           message_id: z.string().describe("消息 message_id"),
           file_key: z.string().describe("图片 image_key 或文件 file_key"),
@@ -34,62 +34,62 @@ function createLarkMcpServer(chatId: string, cronManager: CronManager) {
           file_name: z.string().optional().describe("文件名（type=file 时建议提供）"),
         },
         async (args) => {
-          const path = await fetchMessageResource(args.message_id, args.file_key, args.type, args.file_name)
+          const path = await channel.download(chatId, args.message_id, args.file_key, args.type, args.file_name)
           return { content: [{ type: "text" as const, text: path }] }
         },
       ),
       tool(
-        "send_message",
-        "向当前群组发送消息，支持 @人（可突破静音通知）和回复消息",
+        "send",
+        "向当前群组发送消息。type=text: 文本消息，支持@人和回复；type=image: 发送图片；type=file: 发送文件；type=audio: TTS语音，传 audio_help=true 查看语音参数说明",
         {
-          text: z.string().describe("要发送的文本内容"),
-          mention_open_ids: z.array(z.string()).optional().describe("要 @ 的用户 open_id 列表，@人可突破静音通知"),
-          reply_message_id: z.string().optional().describe("回复某条消息的 message_id，不传则发新消息"),
+          type: z.enum(["text", "image", "file", "audio"]).describe("消息类型"),
+          // text
+          text: z.string().optional().describe("文本内容（type=text/audio 时必填）"),
+          mention_open_ids: z.array(z.string()).optional().describe("要 @ 的用户 open_id 列表（type=text，可突破静音通知）"),
+          reply_message_id: z.string().optional().describe("回复某条消息的 message_id（type=text）"),
+          // image / file
+          file_path: z.string().optional().describe("本地文件路径（type=image/file 时必填）"),
+          // audio
+          audio_help: z.boolean().optional().describe("传 true 查看 TTS 语音完整参数说明"),
+          emotion: z.string().optional().describe("整体情绪，默认 calm（type=audio）"),
+          speed: z.number().optional().describe("语速 0.5-2，默认 1（type=audio）"),
         },
         async (args) => {
-          const result = await sendMessage(chatId, args.text, args.mention_open_ids, args.reply_message_id)
-          return { content: [{ type: "text" as const, text: result }] }
-        },
-      ),
-      tool(
-        "send_image",
-        "向当前群组发送图片消息（自动上传本地图片文件）",
-        { file_path: z.string().describe("本地图片文件路径") },
-        async (args) => {
-          const result = await sendImageMessage(chatId, args.file_path)
-          return { content: [{ type: "text" as const, text: result }] }
-        },
-      ),
-      tool(
-        "send_file",
-        "向当前群组发送文件消息（自动上传本地文件）",
-        { file_path: z.string().describe("本地文件路径") },
-        async (args) => {
-          const result = await sendFileMessage(chatId, args.file_path)
-          return { content: [{ type: "text" as const, text: result }] }
-        },
-      ),
-      tool(
-        "send_audio",
-        "向当前群组发送语音消息（TTS 文本转语音）,支持插入 <#秒数#> — 插入停顿、(laughs) - 大笑。传 help=true 查看完整参数说明",
-        {
-          help: z.boolean().optional().describe("传 true 查看完整参数说明"),
-          text: z.string().optional().describe("要转为语音的文本"),
-          emotion: z.string().optional().describe("整体情绪，默认 calm"),
-          speed: z.number().optional().describe("语速 0.5-2，默认 1"),
-        },
-        async (args) => {
-          if (args.help) {
+          if (args.audio_help) {
             return { content: [{ type: "text" as const, text: AUDIO_HELP }] }
           }
-          if (!args.text) {
-            return { content: [{ type: "text" as const, text: "缺少 text 参数" }] }
+          switch (args.type) {
+            case "text": {
+              if (!args.text) return { content: [{ type: "text" as const, text: "缺少 text 参数" }] }
+              const result = await channel.send(chatId, {
+                type: "text",
+                text: args.text,
+                mentionIds: args.mention_open_ids,
+                replyMessageId: args.reply_message_id,
+              })
+              return { content: [{ type: "text" as const, text: result }] }
+            }
+            case "image": {
+              if (!args.file_path) return { content: [{ type: "text" as const, text: "缺少 file_path 参数" }] }
+              const result = await channel.send(chatId, { type: "image", filePath: args.file_path })
+              return { content: [{ type: "text" as const, text: result }] }
+            }
+            case "file": {
+              if (!args.file_path) return { content: [{ type: "text" as const, text: "缺少 file_path 参数" }] }
+              const result = await channel.send(chatId, { type: "file", filePath: args.file_path })
+              return { content: [{ type: "text" as const, text: result }] }
+            }
+            case "audio": {
+              if (!args.text) return { content: [{ type: "text" as const, text: "缺少 text 参数" }] }
+              const result = await channel.send(chatId, {
+                type: "audio",
+                text: args.text,
+                emotion: args.emotion,
+                speed: args.speed,
+              })
+              return { content: [{ type: "text" as const, text: result }] }
+            }
           }
-          const result = await sendAudioMessage(chatId, args.text, {
-            emotion: args.emotion,
-            speed: args.speed,
-          })
-          return { content: [{ type: "text" as const, text: result }] }
         },
       ),
       tool(
@@ -139,11 +139,10 @@ type Options = {
   botName: string,
   botOpenId: string,
   favorite: string[],
-  profilesDir: string,
-  userCache: UserCache,
+  channel: Channel,
   conversationId: string | null,
   cronManager: CronManager,
-  log: typeof Log,
+  log: typeof Log
   abortController?: AbortController,
 }
 
@@ -152,15 +151,23 @@ export async function run(prompt: string, options: Options): Promise<string> {
   log.info("prompt:\n", prompt)
   log.info("start, resume:", String(!!options.conversationId))
 
-  const larkMcp = createLarkMcpServer(options.chatId, options.cronManager)
+  const channelMcp = createChannelMcpServer(options.channel, options.chatId, options.cronManager)
 
   // 构建决策人段落
   const favoriteSection = options.favorite.length > 0
     ? `## 决策人\n以下人员是决策人，群内有异议时以他们的意见为准：\n${options.favorite.map(f => `- ${f}`).join("\n")}`
     : ""
 
-  const systemPrompt = `${SYSTEM_PROMPT.replace("FAVORITE_SECTION", favoriteSection).replace("{{PROFILES_DIR}}", options.profilesDir).replace("{{SOUL_FILE}}", SOUL_FILE)}\n\n## 我的身份\n- **名字**: ${options.botName}\n- **open_id**: \`${options.botOpenId}\`\n- 消息中 @${options.botName} 或 @\`${options.botOpenId}\` 就是在叫你\n\n## 当前群信息\n${options.chatDetail}`
+  // 构建系统提示词：替换占位符 + 注入 channel 提示词
+  const channelPrompt = options.channel.capabilities().systemPrompt
+  const systemPrompt = `${SYSTEM_PROMPT
+    .replace("FAVORITE_SECTION", favoriteSection)
+    .replace("CHANNEL_PROMPT", channelPrompt)
+    .replaceAll("{{PROFILES_INDEX}}", PROFILES_INDEX)
+    .replaceAll("{{SOUL_FILE}}", SOUL_FILE)
+  }\n\n## 我的身份\n- **名字**: ${options.botName}\n- **open_id**: \`${options.botOpenId}\`\n- 消息中 @${options.botName} 或 @\`${options.botOpenId}\` 就是在叫你\n\n## 当前群信息\n${options.chatDetail}`
 
+  console.log("[system prompt]",systemPrompt)
   const isResume = !!options.conversationId
   const queryOptions = {
     resume: options.conversationId ?? undefined,
@@ -170,7 +177,7 @@ export async function run(prompt: string, options: Options): Promise<string> {
     settingSources: ["project", "local"] as SettingSource[],
     systemPrompt: { type: "preset" as const, preset: "claude_code" as const, append: systemPrompt },
     mcpServers: {
-      lark: larkMcp,
+      channel: channelMcp,
       "web-search-prime": {
         type: "http" as const,
         url: "https://open.bigmodel.cn/api/mcp/web_search_prime/mcp",
@@ -191,14 +198,6 @@ export async function run(prompt: string, options: Options): Promise<string> {
         type: "http" as const,
         url: "https://open.bigmodel.cn/api/mcp/web_reader/mcp",
         headers: { Authorization: `Bearer ${zhipuToken()}` },
-      },
-    },
-    agents: {
-      coder: {
-        description: "前端开发 agent，负责编码、commit、push",
-        prompt: "你是一名前端开发工程师。根据任务要求完成编码，编码完成后必须运行 bunx tsc --noEmit 验证类型检查通过，通过后再 commit 和 push。类型检查不通过则修复后重新验证。分支和工作目录已创建好，你只需提交代码。完成后提供 MR 链接，**MR 目标分支必须是 test，不是 master**，链接格式：{repo_url}/git/merges/create/test...{your_branch}",
-        tools: ["Bash", "Read", "Edit", "Write", "Glob", "Grep"],
-        permissionMode: "bypassPermissions" as const
       },
     },
     permissionMode: "bypassPermissions" as const,
@@ -253,6 +252,5 @@ export async function run(prompt: string, options: Options): Promise<string> {
     }
   }
 
-  log.info("done, succeeded:", String(succeeded))
   return sessionId
 }
