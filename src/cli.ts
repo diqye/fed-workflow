@@ -81,6 +81,7 @@ export async function main() {
             webhook: {
               host: "0.0.0.0",
               port: 7700,
+              publicUrl: "https://your-domain.com",
             },
             projects: [
                 {
@@ -183,8 +184,8 @@ export async function main() {
     // 初始化 WebhookManager
     const webhookHost = config.webhook?.host ?? "0.0.0.0"
     const webhookPort = config.webhook?.port ?? 7700
-    const webhookBaseUrl = `http://${webhookHost}:${webhookPort}`
-    const webhookManager = new WebhookManager(webhookBaseUrl)
+    const webhookPublicUrl = config.webhook?.publicUrl ?? `http://${webhookHost}:${webhookPort}`
+    const webhookManager = new WebhookManager(webhookPublicUrl)
     webhookManager.cleanup()
     Bun.serve({
       hostname: webhookHost,
@@ -202,7 +203,7 @@ export async function main() {
         })
       },
     })
-    Log.info(`Webhook 服务已启动: ${webhookBaseUrl}`)
+    Log.info(`Webhook 服务已启动: ${webhookHost}:${webhookPort}, publicUrl: ${webhookPublicUrl}`)
 
     async function startRun(chatId: string, state: GroupState) {
         if(state.running) return

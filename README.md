@@ -100,6 +100,7 @@ bun run index.ts
 | `env` | 否 | 环境变量，优先于系统环境变量 |
 | `webhook.host` | 否 | Webhook 服务监听地址，默认 `0.0.0.0` |
 | `webhook.port` | 否 | Webhook 服务端口，默认 `7700` |
+| `webhook.publicUrl` | 否 | 对外访问地址（经 nginx 代理等），Agent 和用户看到的 webhook URL。不填则用 `http://{host}:{port}` |
 | `projects` | 是 | 项目列表 |
 | `projects[].chatId` | 是 | 飞书群 chat_id |
 | `projects[].cwd` | 是 | 项目工作目录，agent 在此目录下工作 |

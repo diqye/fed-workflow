@@ -75,7 +75,7 @@ export type ProjectConfig = {
 
 export type Config = {
   env?: Record<string, string>
-  webhook?: { host?: string; port?: number }
+  webhook?: { host?: string; port?: number; publicUrl?: string }
   projects: ProjectConfig[]
 }
 
