@@ -2,17 +2,17 @@ import { query, createSdkMcpServer, tool, type SettingSource } from "@anthropic-
 import { z } from "zod";
 import { mkdirSync, renameSync } from "fs";
 import { join } from "path";
-import { SYSTEM_PROMPT, AUDIO_HELP, SOUL_FILE, PROFILES_INDEX } from "./const";
+import { SYSTEM_PROMPT, AUDIO_HELP, SOUL_FILE, PROFILES_INDEX, parseExpiresIn, EXPIRES_IN } from "./const";
 import { zhipuToken } from "./env";
 import { Log } from "./log";
 import type { CronManager } from "./cronManager";
+import type { WebhookManager } from "./webhookManager";
 import type { Channel } from "./message/channel";
-import type { UserCache } from "./message/userCache";
 
 /**
  * Channel MCP 工具
  */
-function createChannelMcpServer(channel: Channel, chatId: string, cronManager: CronManager, cwd: string) {
+function createChannelMcpServer(channel: Channel, chatId: string, cronManager: CronManager, webhookManager: WebhookManager) {
   return createSdkMcpServer({
     name: "channel",
     version: "1.0.0",
@@ -95,15 +95,18 @@ function createChannelMcpServer(channel: Channel, chatId: string, cronManager: C
         },
       ),
       tool(
-        "cron_create",
-        "创建定时任务。将自然语言时间描述转换为 cron 表达式，如'每天早上9点'→'0 9 * * *'、'工作日下午3点'→'0 15 * * 1-5'。一次性任务请在 prompt 中包含'触发后删除此任务'，触发时 agent 会自行调用 cron_delete 清理",
+        "cron",
+        "创建或更新定时任务。传入 id 为更新，不传为创建。将自然语言时间描述转换为 cron 表达式，如'每天早上9点'→'0 9 * * *'、'工作日下午3点'→'0 15 * * 1-5'",
         {
           expression: z.string().describe("cron 表达式，5位：分 时 日 月 周，如 0 9 * * * 表示每天9点"),
           prompt: z.string().describe("触发时发给 agent 的提示文本"),
+          id: z.string().optional().describe("任务 ID，传入则更新已有任务，不传则创建新任务"),
+          one_shot: z.boolean().optional().describe("一次性任务，触发后自动删除，默认 false"),
         },
         async (args) => {
-          const task = cronManager.create(chatId, args.expression, args.prompt)
-          return { content: [{ type: "text" as const, text: `定时任务已创建: id=${task.id}, expression="${task.expression}", prompt="${task.prompt}"` }] }
+          const task = cronManager.create(chatId, args.expression, args.prompt, { id: args.id, oneShot: args.one_shot })
+          const action = args.id ? "更新" : "创建"
+          return { content: [{ type: "text" as const, text: `定时任务已${action}: id=${task.id}, expression="${task.expression}", prompt="${task.prompt}"${task.oneShot ? ", 一次性" : ""}` }] }
         },
       ),
       tool(
@@ -131,7 +134,63 @@ function createChannelMcpServer(channel: Channel, chatId: string, cronManager: C
         },
       ),
       tool(
-        "install_to_dot_claude",
+        "webhook",
+        "创建或更新 webhook 端点。传入 id 为更新，不传为创建。prompt 支持 {{body}}（请求体）和 {{url}}（完整请求 URL）占位符",
+        {
+          prompt: z.string().describe("触发提示模板，支持 {{body}} 和 {{url}} 占位符"),
+          method: z.string().optional().describe("HTTP method，默认 POST"),
+          expires_in: z.string().optional().describe(`存活时长，不传 = 一次性（触发后自动删除）。可选：${Object.keys(EXPIRES_IN).join("、")}。若不在可选列表之内，直接传数字，秒单位。`),
+          id: z.string().optional().describe("Webhook ID，传入则更新已有 webhook，不传则创建新的"),
+        },
+        async (args) => {
+          const expiresIn = parseExpiresIn(args.expires_in)
+          const webhook = webhookManager.create(chatId, args.prompt, {
+            method: args.method,
+            expiresIn,
+            id: args.id,
+          })
+          const action = args.id ? "更新" : "创建"
+          const expiresLabel = args.expires_in ? args.expires_in : (webhook.expiresIn > 0 ? `${webhook.expiresIn} 秒` : "一次性")
+          return { content: [{ type: "text" as const, text: `Webhook 已${action}: ${webhookManager.url(webhook.id)} (method: ${webhook.method}, ${expiresLabel})` }] }
+        },
+      ),
+      tool(
+        "webhook_delete",
+        "删除 webhook",
+        {
+          id: z.string().describe("要删除的 webhook ID"),
+        },
+        async (args) => {
+          const ok = webhookManager.delete(chatId, args.id)
+          return { content: [{ type: "text" as const, text: ok ? `Webhook ${args.id} 已删除` : `Webhook ${args.id} 不存在` }] }
+        },
+      ),
+      tool(
+        "webhook_list",
+        "列出当前群的所有 webhook",
+        {},
+        async () => {
+          const webhooks = webhookManager.list(chatId)
+          if (webhooks.length === 0) {
+            return { content: [{ type: "text" as const, text: "当前群没有 webhook" }] }
+          }
+          const lines = webhooks.map(w => {
+            return `- id: ${w.id}, url: ${webhookManager.url(w.id)}, method: ${w.method}, ${w.expiresIn > 0 ? `存活 ${w.expiresIn} 秒` : "一次性"}, prompt: "${w.prompt}"`
+          })
+          return { content: [{ type: "text" as const, text: `当前群 Webhook (${webhooks.length})：\n${lines.join("\n")}` }] }
+        },
+      ),
+    ],
+  })
+}
+
+function createDotClaudeMcpServer(cwd: string) {
+  return createSdkMcpServer({
+    name: "dot-claude",
+    version: "1.0.0",
+    tools: [
+      tool(
+        "install",
         "将已存在的文件或目录移动到项目 .claude 目录下（绕过 agent 沙箱对 .claude 的写入限制）。移动后源文件会被删除",
         {
           source: z.string().describe("源文件或目录的绝对路径"),
@@ -158,6 +217,7 @@ type Options = {
   channel: Channel,
   conversationId: string | null,
   cronManager: CronManager,
+  webhookManager: WebhookManager,
   log: typeof Log
   abortController?: AbortController,
 }
@@ -167,7 +227,8 @@ export async function run(prompt: string, options: Options): Promise<string> {
   log.info("prompt:\n", prompt)
   log.info("start, resume:", String(!!options.conversationId))
 
-  const channelMcp = createChannelMcpServer(options.channel, options.chatId, options.cronManager, options.cwd)
+  const channelMcp = createChannelMcpServer(options.channel, options.chatId, options.cronManager, options.webhookManager)
+  const dotClaudeMcp = createDotClaudeMcpServer(options.cwd)
 
   // 构建决策人段落
   const favoriteSection = options.favorite.length > 0
@@ -183,7 +244,6 @@ export async function run(prompt: string, options: Options): Promise<string> {
     .replaceAll("{{SOUL_FILE}}", SOUL_FILE)
   }\n\n## 我的身份\n- **名字**: ${options.botName}\n- **open_id**: \`${options.botOpenId}\`\n- 消息中 @${options.botName} 或 @\`${options.botOpenId}\` 就是在叫你\n\n## 当前群信息\n${options.chatDetail}`
 
-  console.log("[system prompt]",systemPrompt)
   const isResume = !!options.conversationId
   const queryOptions = {
     resume: options.conversationId ?? undefined,
@@ -194,6 +254,7 @@ export async function run(prompt: string, options: Options): Promise<string> {
     systemPrompt: { type: "preset" as const, preset: "claude_code" as const, append: systemPrompt },
     mcpServers: {
       channel: channelMcp,
+      "dot-claude": dotClaudeMcp,
       "web-search-prime": {
         type: "http" as const,
         url: "https://open.bigmodel.cn/api/mcp/web_search_prime/mcp",

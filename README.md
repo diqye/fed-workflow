@@ -53,6 +53,9 @@ bun run index.ts --init
 env:
   LOG_LEVEL: info
   zhipu_token: your_token_here
+webhook:
+  host: 0.0.0.0
+  port: 7700
 projects:
   - chatId: oc_xxx
     cwd: /path/to/project
@@ -95,6 +98,8 @@ bun run index.ts
 | 字段 | 必填 | 说明 |
 |------|------|------|
 | `env` | 否 | 环境变量，优先于系统环境变量 |
+| `webhook.host` | 否 | Webhook 服务监听地址，默认 `0.0.0.0` |
+| `webhook.port` | 否 | Webhook 服务端口，默认 `7700` |
 | `projects` | 是 | 项目列表 |
 | `projects[].chatId` | 是 | 飞书群 chat_id |
 | `projects[].cwd` | 是 | 项目工作目录，agent 在此目录下工作 |
@@ -124,13 +129,14 @@ src/
   cli.ts              入口：CLI 解析 + 消息调度循环
   agent.ts            Agent SDK 调用：MCP 工具
   config.ts           YAML 配置读写，自动回填
+  const.ts            常量 + 类型 + 系统提示词
   cronManager.ts      定时任务管理
+  webhookManager.ts   Webhook 管理
   env.ts              环境变量统一入口
-  const.ts            常量 + 系统提示词
   log.ts              分级日志
   message/
     types.ts          Message, SendContent 等标准类型
-    channel.ts        Channel 路由层 + feed 防抖
+    channel.ts        Channel 路由层 + feed 防抖 + 事件注入
     userCache.ts      用户缓存
   lark/
     index.ts          LarkImpl — 飞书 Channel 实现
@@ -161,9 +167,29 @@ Agent 可用的 Channel MCP 工具：
 | `send` | 发送消息（type=text/image/file/audio） |
 | `fetch_chat_detail` | 获取当前群详情 |
 | `fetch_message_resource` | 下载消息中的图片或文件 |
-| `cron_create` | 创建定时任务 |
+| `cron` | 创建或更新定时任务（传 id 更新，不传创建） |
 | `cron_delete` | 删除定时任务 |
 | `cron_list` | 列出当前群的定时任务 |
+| `webhook` | 创建或更新 webhook（传 id 更新，不传创建） |
+| `webhook_delete` | 删除 webhook |
+| `webhook_list` | 列出当前群的 webhook |
+
+### 定时任务
+
+- Agent 可通过 `cron` 工具创建定时任务，传入 `one_shot=true` 为一次性任务（触发后自动删除）
+- 定时任务按群隔离，持久化到 `~/.fed-workflow/cron.yaml`
+- 支持 id 参数：传入已有 id 为更新，不传为创建
+
+### Webhook
+
+- Agent 可通过 `webhook` 工具创建 HTTP 端点，外部系统（CI/CD、监控、第三方服务）通过 HTTP 请求触发 Agent
+- 默认 POST 方法，支持 GET 等其他方法
+- prompt 支持 `{{body}}`（请求体）和 `{{url}}`（完整请求 URL）占位符
+- `expires_in` 支持语义化值：`30m`、`1h`、`6h`、`12h`、`1d`、`7d`、`30d`，不传为一次性（触发后自动删除）
+- URL 格式：`http://{host}:{port}/agent/hook/{id}`
+- 按群隔离，持久化到 `~/.fed-workflow/webhooks.yaml`
+- 启动时自动清理过期 webhook
+- 支持 id 参数：传入已有 id 为更新，不传为创建
 
 ### 身份一致性
 
@@ -192,12 +218,6 @@ Agent 具有跨群一致的身份，通过三层机制保障：
 - 画像是你对这个人的感受和印象，只记人的印象，不记群规则和任务指令
 - 创建或更新画像后必须同步更新索引
 
-### 定时任务
-
-- Agent 可通过 MCP 工具 `cron_create` / `cron_delete` / `cron_list` 管理定时任务
-- 定时任务按群隔离，持久化到 `~/.fed-workflow/cron.yaml`
-- 一次性任务：在 prompt 中包含"触发后删除此任务"，Agent 会自行调用 `cron_delete` 清理
-
 ### 语音消息
 
 - Agent 可通过 `send` 工具（type=audio）发送语音消息（TTS 文本转语音）
@@ -209,6 +229,11 @@ Agent 具有跨群一致的身份，通过三层机制保障：
 - 默认使用素笔（su-bi）风格说话和写文件，用户明确要求其他风格时除外
 - 素笔：短句、克制、留白，用细节说话，不解释，让读者自己感受
 - Skill 文件：`skills/su-bi/SKILL.md`，启动时自动部署到 `~/.claude/skills/su-bi/`
+
+### .claude 目录
+
+- Agent 沙箱禁止直接写入 `.claude` 目录
+- 需要写 skills、settings 等到 `.claude` 时，先写到项目其他位置，再用 `dot-claude_install` MCP 工具移动过去
 
 ### 日志
 

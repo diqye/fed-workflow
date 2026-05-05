@@ -19,33 +19,34 @@ bunx tsc --noEmit              # 类型检查（开发完成后验证）
 ## Architecture
 
 ```
-index.ts ──→ src/cli.ts (入口：CLI解析 + 消息调度循环)
-              ├── src/config.ts      (YAML配置读写，自动回填)
-              ├── src/agent.ts       (Agent SDK 调用：MCP工具)
-              ├── src/cronManager.ts (定时任务管理)
-              ├── src/env.ts         (环境变量统一入口，禁止直接读 Bun.env)
-              ├── src/const.ts       (常量 + 系统提示词)
-              ├── src/log.ts         (分级日志，按日期覆盖)
+index.ts ──→ src/cli.ts (入口：CLI解析 + 消息调度循环 + Bun.serve webhook)
+              ├── src/config.ts        (YAML配置读写，自动回填)
+              ├── src/agent.ts         (Agent SDK 调用：MCP工具)
+              ├── src/const.ts         (常量 + 类型 + 系统提示词)
+              ├── src/cronManager.ts   (定时任务管理)
+              ├── src/webhookManager.ts(Webhook 管理)
+              ├── src/env.ts           (环境变量统一入口，禁止直接读 Bun.env)
+              ├── src/log.ts           (分级日志，按日期覆盖)
               ├── src/message/
-              │     types.ts         (Message, SendContent 等标准类型)
-              │     channel.ts       (Channel 路由层 + feed 防抖 + cron 注入)
-              │     userCache.ts     (用户缓存)
+              │     types.ts           (Message, SendContent 等标准类型)
+              │     channel.ts         (Channel 路由层 + feed 防抖 + 事件注入)
+              │     userCache.ts       (用户缓存)
               └── src/lark/
-                    index.ts         (LarkImpl — 飞书 Channel 实现)
-                    schemas.ts       (飞书消息 Zod schema)
-                    api.ts           (飞书 API 封装)
-                    listen.ts        (消息监听)
-                    send.ts          (消息发送 + 下载 + TTS)
-                    format.ts        (消息格式化)
+                    index.ts           (LarkImpl — 飞书 Channel 实现)
+                    schemas.ts         (飞书消息 Zod schema)
+                    api.ts             (飞书 API 封装)
+                    listen.ts          (消息监听)
+                    send.ts            (消息发送 + 下载 + TTS)
+                    format.ts          (消息格式化)
 ```
 
-**核心数据流**：Channel.feed() 防抖收集消息 + cron 事件 → cli.ts 按群分发 → agent.ts:run() 调用 Agent SDK → 结果通过 MCP `send` 回群
+**核心数据流**：Channel.feed() 防抖收集消息 + cron/webhook 事件 → cli.ts 按群分发 → agent.ts:run() 调用 Agent SDK → 结果通过 MCP `send` 回群
 
 **Channel 抽象**：chatId 统一带前缀（`lark:oc_xxx`），Channel 按前缀路由到对应 impl。新增消息源只需实现 `ChannelImpl` 接口。
 
 **多群并行**：不同群并行，同群串行。`GroupState` 管理 pending/running 状态，同群任务完成后才处理下一批。
 
-**const.ts 设计**：Zod schema 定义飞书消息结构，`larkContentSchema` 用 `transform` 链将原始 JSON 解析为联合类型 `LarkContent`——schema 既是验证器也是解析器，通过 `.transform()` 链式组合完成 decode。
+**const.ts 设计**：所有非 message 模块的常量和类型统一放在 const.ts。包括：路径常量、CronTask/CronGroup、Webhook/WebhookGroup、ProjectConfig/Config、语义化时间映射（EXPIRES_IN/parseExpiresIn）、系统提示词等。
 
 ## Zen
 

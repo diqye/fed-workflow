@@ -1,23 +1,9 @@
 import { readFile, writeFile } from "fs/promises"
 import YAML from "yaml"
 import { Log } from "./log"
+import type { Config, ProjectConfig } from "./const"
 
-export type ProjectConfig = {
-  chatId: string
-  cwd: string
-  conversationId?: string
-  groupName?: string
-  description?: string
-  /** 决策人，群内有异议时以这些人的意见为准。如 "秦振龙 称呼为哥" */
-  favorite?: string[]
-  /** 群不可访问时自动置 true，恢复时删掉此行即可 */
-  disabled?: boolean
-}
-
-export type Config = {
-  env?: Record<string, string>
-  projects: ProjectConfig[]
-}
+export type { Config, ProjectConfig }
 
 export async function loadConfig(path: string): Promise<Config> {
   const raw = await readFile(path, "utf-8")

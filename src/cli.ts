@@ -3,16 +3,15 @@ import { Channel } from "./message/channel";
 import type { Message, FeedEvent } from "./message/types";
 import { LarkImpl } from "./lark";
 import { initLog, Log } from "./log";
-import { loadConfig, saveConfig, updateProject, addProject, type Config, type ProjectConfig } from "./config";
+import { loadConfig, saveConfig, updateProject, addProject } from "./config";
 import { CronManager } from "./cronManager";
+import { WebhookManager } from "./webhookManager";
 import { parseArgs } from "util"
 import { existsSync, mkdirSync, copyFileSync } from "fs"
 import { join } from "path"
 import { homedir } from "os"
 import { Glob } from "bun"
-import { PROFILES_DIR, FED_DIR, FED_CONFIG_PATH, FED_PROJECTS_DIR } from "./const"
-
-const MAX_MESSAGES_PER_RUN = 50
+import { PROFILES_DIR, FED_DIR, FED_CONFIG_PATH, FED_PROJECTS_DIR, MAX_MESSAGES_PER_RUN, type Config, type ProjectConfig } from "./const"
 
 function buildChatDetail(project: ProjectConfig): string {
   const lines = [
@@ -78,6 +77,10 @@ export async function main() {
             env: {
               LOG_LEVEL: "info",
               zhipu_token: "xxxx",
+            },
+            webhook: {
+              host: "0.0.0.0",
+              port: 7700,
             },
             projects: [
                 {
@@ -177,6 +180,30 @@ export async function main() {
     // 初始化 CronManager
     const cronManager = new CronManager()
 
+    // 初始化 WebhookManager
+    const webhookHost = config.webhook?.host ?? "0.0.0.0"
+    const webhookPort = config.webhook?.port ?? 7700
+    const webhookBaseUrl = `http://${webhookHost}:${webhookPort}`
+    const webhookManager = new WebhookManager(webhookBaseUrl)
+    webhookManager.cleanup()
+    Bun.serve({
+      hostname: webhookHost,
+      port: webhookPort,
+      fetch(req) {
+        const url = new URL(req.url)
+        if (!url.pathname.startsWith("/agent/hook/")) {
+          return new Response("Not Found", { status: 404 })
+        }
+        const id = url.pathname.slice("/agent/hook/".length)
+        const bodyPromise = req.text().catch(() => "")
+        return bodyPromise.then(body => {
+          const result = webhookManager.handleRequest(id, req.method, req.url, body)
+          return new Response(result.body, { status: result.status })
+        })
+      },
+    })
+    Log.info(`Webhook 服务已启动: ${webhookBaseUrl}`)
+
     async function startRun(chatId: string, state: GroupState) {
         if(state.running) return
         if(state.pendingMessages.length === 0 && state.pendingCrons.length === 0) return
@@ -230,6 +257,7 @@ export async function main() {
                 channel,
                 conversationId: project.conversationId ?? null,
                 cronManager,
+                webhookManager,
                 abortController: state.abortController,
             })
 
@@ -251,7 +279,7 @@ export async function main() {
 
     // 启动 feed
     cronManager.loadAll()
-    const feed = channel.feed(cronManager)
+    const feed = channel.feed(cronManager, webhookManager)
 
     console.log("开始监听消息")
     for await (const events of feed) {

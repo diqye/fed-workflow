@@ -54,6 +54,7 @@ export class CronManager {
       const job = new CronJob(task.expression, () => {
         Log.info(`Cron 触发: ${key} "${task.prompt}"`)
         this.onFireCallback?.(chatId, task.prompt)
+        if (task.oneShot) this.delete(chatId, task.id)
       }, null, true)
       this.scheduled.set(key, job)
     } catch (e) {
@@ -70,7 +71,7 @@ export class CronManager {
     }
   }
 
-  create(chatId: string, expression: string, prompt: string): CronTask {
+  create(chatId: string, expression: string, prompt: string, opts?: { id?: string; oneShot?: boolean }): CronTask {
     const groups = loadGroups()
     let group = groups.find(g => g.chatId === chatId)
     if (!group) {
@@ -78,13 +79,29 @@ export class CronManager {
       groups.push(group)
     }
 
-    const id = `c${Date.now().toString(36)}`
-    const task: CronTask = { id, expression, prompt }
+    // 有 id → 更新
+    if (opts?.id) {
+      const existing = group.tasks.find(t => t.id === opts.id)
+      if (existing) {
+        this.unregister(chatId, existing.id)
+        existing.expression = expression
+        existing.prompt = prompt
+        if (opts.oneShot !== undefined) existing.oneShot = opts.oneShot
+        this.register(chatId, existing)
+        saveGroups(groups)
+        Log.info(`Cron 已更新: ${chatId}:${existing.id} "${expression}" "${prompt}"`)
+        return existing
+      }
+    }
+
+    // 无 id 或 id 不存在 → 创建
+    const id = opts?.id ?? `c${Date.now().toString(36)}`
+    const task: CronTask = { id, expression, prompt, oneShot: opts?.oneShot }
     group.tasks.push(task)
     saveGroups(groups)
 
     this.register(chatId, task)
-    Log.info(`Cron 已创建: ${chatId}:${id} "${expression}" "${prompt}"`)
+    Log.info(`Cron 已创建: ${chatId}:${id} "${expression}" "${prompt}" oneShot=${!!task.oneShot}`)
     return task
   }
 

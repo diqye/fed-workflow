@@ -2,6 +2,7 @@
  * Channel 层：支持多个实现，chatId 统一加前缀避免冲突
  */
 import type { CronManager } from "../cronManager"
+import type { WebhookManager } from "../webhookManager"
 import type { Message, SendContent, ChannelCapabilities, FeedEvent } from "./types"
 import type { UserCache } from "./userCache"
 
@@ -159,7 +160,7 @@ export class Channel {
 
   // ---- 合并监听 + 防抖 + cron ----
 
-  async *feed(cronManager: CronManager, delay = 3000): AsyncGenerator<FeedEvent[]> {
+  async *feed(cronManager: CronManager, webhookManager: WebhookManager, delay = 3000): AsyncGenerator<FeedEvent[]> {
     let staged: FeedEvent[] = []
     let wake: (() => void) | null = null
 
@@ -175,6 +176,12 @@ export class Channel {
 
     // 监听 cron 触发
     cronManager.onFire((chatId, prompt) => {
+      staged.push({ type: "cron", chatId, prompt })
+      const w = wake as (() => void) | null; wake = null; w?.()
+    })
+
+    // 监听 webhook 触发
+    webhookManager.onFire((chatId, prompt) => {
       staged.push({ type: "cron", chatId, prompt })
       const w = wake as (() => void) | null; wake = null; w?.()
     })
