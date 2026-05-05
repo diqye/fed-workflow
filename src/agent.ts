@@ -135,23 +135,21 @@ function createChannelMcpServer(channel: Channel, chatId: string, cronManager: C
       ),
       tool(
         "webhook",
-        "创建或更新 webhook 端点。传入 id 为更新，不传为创建。prompt 支持 {{body}}（请求体）和 {{url}}（完整请求 URL）占位符",
+        "创建或更新 webhook 端点。传入 id 为更新，不传为创建。prompt 支持 {{body}}（请求体）和 {{path}}（secret 后的自定义路径+查询串）占位符。接受任意 HTTP 方法。返回的 URL 中 **** 需替换为实际的 webhook secret，**** 后可追加自定义路径",
         {
           prompt: z.string().describe("触发提示模板，支持 {{body}} 和 {{url}} 占位符"),
-          method: z.string().optional().describe("HTTP method，默认 POST"),
-          expires_in: z.string().optional().describe(`存活时长，不传 = 一次性（触发后自动删除）。可选：${Object.keys(EXPIRES_IN).join("、")}。若不在可选列表之内，直接传数字，秒单位。`),
+          expires_in: z.string().describe(`存活时长。可选：${Object.keys(EXPIRES_IN).join("、")}。直接传数字字符串为秒数，如 "3600"`),
           id: z.string().optional().describe("Webhook ID，传入则更新已有 webhook，不传则创建新的"),
         },
         async (args) => {
           const expiresIn = parseExpiresIn(args.expires_in)
           const webhook = webhookManager.create(chatId, args.prompt, {
-            method: args.method,
             expiresIn,
             id: args.id,
           })
           const action = args.id ? "更新" : "创建"
-          const expiresLabel = args.expires_in ? args.expires_in : (webhook.expiresIn > 0 ? `${webhook.expiresIn} 秒` : "一次性")
-          return { content: [{ type: "text" as const, text: `Webhook 已${action}: ${webhookManager.url(webhook.id)} (method: ${webhook.method}, ${expiresLabel})` }] }
+          const expiresLabel = webhook.expiresIn > 0 ? (EXPIRES_IN[args.expires_in] ? args.expires_in : `${webhook.expiresIn} 秒`) : webhook.expiresIn === -1 ? "forever" : "once"
+          return { content: [{ type: "text" as const, text: `Webhook 已${action}: ${webhookManager.url(webhook.id)} (${expiresLabel})` }] }
         },
       ),
       tool(
@@ -175,7 +173,8 @@ function createChannelMcpServer(channel: Channel, chatId: string, cronManager: C
             return { content: [{ type: "text" as const, text: "当前群没有 webhook" }] }
           }
           const lines = webhooks.map(w => {
-            return `- id: ${w.id}, url: ${webhookManager.url(w.id)}, method: ${w.method}, ${w.expiresIn > 0 ? `存活 ${w.expiresIn} 秒` : "一次性"}, prompt: "${w.prompt}"`
+            const label = w.expiresIn > 0 ? `${w.expiresIn} 秒` : w.expiresIn === -1 ? "forever" : "once"
+            return `- id: ${w.id}, url: ${webhookManager.url(w.id)}, ${label}, prompt: "${w.prompt}"`
           })
           return { content: [{ type: "text" as const, text: `当前群 Webhook (${webhooks.length})：\n${lines.join("\n")}` }] }
         },

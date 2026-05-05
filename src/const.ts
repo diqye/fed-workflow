@@ -32,14 +32,15 @@ export type CronGroup = {
 export type Webhook = {
   id: string
   chatId: string
-  method: string
   prompt: string
-  expiresIn: number // 0 = 一次性，>0 = 过期秒数
+  expiresIn: number // -1=永久，0=一次性，>0=过期秒数
   createdAt: number
 }
 
-/** 语义化过期时间 → 秒数 */
+/** 语义化过期时间 → 秒数。once=一次性，forever=永不过期 */
 export const EXPIRES_IN: Record<string, number> = {
+  once: 0,
+  forever: -1,
   "30m": 1800,
   "1h": 3600,
   "6h": 21600,
@@ -49,11 +50,12 @@ export const EXPIRES_IN: Record<string, number> = {
   "30d": 2592000,
 }
 
-/** 将 expires_in 参数解析为秒数。支持语义化字符串（如 "1h"）或数字 */
-export function parseExpiresIn(val: string | number | undefined): number {
-  if (val === undefined) return 0
-  if (typeof val === "number") return val
-  return EXPIRES_IN[val] ?? parseInt(val, 10)
+/** 将 expires_in 参数解析为秒数。支持语义化字符串或纯数字字符串（秒） */
+export function parseExpiresIn(val: string): number {
+  if (EXPIRES_IN[val] !== undefined) return EXPIRES_IN[val]
+  const n = parseInt(val, 10)
+  if (!isNaN(n) && n > 0) return n
+  return 0
 }
 
 export type WebhookGroup = {
@@ -75,7 +77,7 @@ export type ProjectConfig = {
 
 export type Config = {
   env?: Record<string, string>
-  webhook?: { host?: string; port?: number; publicUrl?: string }
+  webhook?: { host?: string; port?: number; publicUrl?: string; secret?: string }
   projects: ProjectConfig[]
 }
 

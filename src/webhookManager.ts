@@ -29,10 +29,12 @@ function saveGroups(groups: WebhookGroup[]) {
 
 export class WebhookManager {
   private baseUrl: string
+  private secret: string
   private onFireCallback: OnFire | null = null
 
-  constructor(baseUrl: string) {
+  constructor(baseUrl: string, secret: string) {
     this.baseUrl = baseUrl
+    this.secret = secret
   }
 
   onFire(callback: OnFire) {
@@ -52,7 +54,6 @@ export class WebhookManager {
         Log.info(`Webhook 清理: ${g.chatId} 删除了 ${before - g.webhooks.length} 个过期 webhook`)
       }
     }
-    // 清理空 group
     const before = groups.length
     const remaining = groups.filter(g => g.webhooks.length > 0)
     if (remaining.length < before) changed = true
@@ -60,10 +61,10 @@ export class WebhookManager {
   }
 
   url(id: string): string {
-    return `${this.baseUrl}/agent/hook/${id}`
+    return `${this.baseUrl}/agent/hook/${id}/****`
   }
 
-  create(chatId: string, prompt: string, opts?: { expiresIn?: number; method?: string; id?: string }): Webhook {
+  create(chatId: string, prompt: string, opts?: { expiresIn?: number; id?: string }): Webhook {
     const groups = loadGroups()
     let group = groups.find(g => g.chatId === chatId)
     if (!group) {
@@ -75,11 +76,10 @@ export class WebhookManager {
     if (opts?.id) {
       const existing = group.webhooks.find(w => w.id === opts.id)
       if (existing) {
-        existing.method = opts.method ?? existing.method ?? "POST"
         existing.prompt = prompt
         if (opts.expiresIn !== undefined) existing.expiresIn = opts.expiresIn
         saveGroups(groups)
-        Log.info(`Webhook 已更新: ${chatId}:${existing.id} method=${existing.method} expiresIn=${existing.expiresIn}`)
+        Log.info(`Webhook 已更新: ${chatId}:${existing.id} expiresIn=${existing.expiresIn}`)
         return existing
       }
     }
@@ -89,7 +89,6 @@ export class WebhookManager {
     const webhook: Webhook = {
       id,
       chatId,
-      method: opts?.method ?? "POST",
       prompt,
       expiresIn: opts?.expiresIn ?? 0,
       createdAt: Date.now(),
@@ -97,7 +96,7 @@ export class WebhookManager {
     group.webhooks.push(webhook)
     saveGroups(groups)
 
-    Log.info(`Webhook 已创建: ${chatId}:${id} method=${webhook.method} expiresIn=${webhook.expiresIn}`)
+    Log.info(`Webhook 已创建: ${chatId}:${id} expiresIn=${webhook.expiresIn}`)
     return webhook
   }
 
@@ -128,27 +127,24 @@ export class WebhookManager {
   }
 
   /** 处理 HTTP 请求，返回 { status, body } */
-  handleRequest(id: string, method: string, url: string, body: string): { status: number; body: string } {
+  handleRequest(id: string, secret: string, path: string, body: string): { status: number; body: string } {
+    if (secret !== this.secret) return { status: 403, body: "forbidden" }
+
     const groups = loadGroups()
     let found: Webhook | undefined
-    let foundGroup: WebhookGroup | undefined
 
     for (const g of groups) {
       const wh = g.webhooks.find(w => w.id === id)
       if (wh) {
         found = wh
-        foundGroup = g
         break
       }
     }
 
     if (!found) return { status: 404, body: "webhook not found" }
 
-    if (found.method !== method) return { status: 405, body: `method not allowed, expected ${found.method}` }
-
     // 检查过期
     if (found.expiresIn > 0 && Date.now() > found.createdAt + found.expiresIn * 1000) {
-      // 过期删除
       this.delete(found.chatId, found.id)
       return { status: 410, body: "webhook expired" }
     }
@@ -156,7 +152,7 @@ export class WebhookManager {
     // 替换占位符
     const prompt = found.prompt
       .replaceAll("{{body}}", body)
-      .replaceAll("{{url}}", url)
+      .replaceAll("{{path}}", path)
 
     // 一次性 webhook：触发后删除
     if (found.expiresIn === 0) {

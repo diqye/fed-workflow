@@ -82,6 +82,7 @@ export async function main() {
               host: "0.0.0.0",
               port: 7700,
               publicUrl: "https://your-domain.com",
+              secret: "secret",
             },
             projects: [
                 {
@@ -185,7 +186,8 @@ export async function main() {
     const webhookHost = config.webhook?.host ?? "0.0.0.0"
     const webhookPort = config.webhook?.port ?? 7700
     const webhookPublicUrl = config.webhook?.publicUrl ?? `http://${webhookHost}:${webhookPort}`
-    const webhookManager = new WebhookManager(webhookPublicUrl)
+    const webhookSecret = config.webhook?.secret ?? "secret"
+    const webhookManager = new WebhookManager(webhookPublicUrl, webhookSecret)
     webhookManager.cleanup()
     Bun.serve({
       hostname: webhookHost,
@@ -195,10 +197,15 @@ export async function main() {
         if (!url.pathname.startsWith("/agent/hook/")) {
           return new Response("Not Found", { status: 404 })
         }
-        const id = url.pathname.slice("/agent/hook/".length)
+        const path = url.pathname.slice("/agent/hook/".length)
+        const parts = path.split("/")
+        const id = parts[0] ?? ""
+        const secret = parts[1] ?? ""
+        // secret 后面的路径 + query
+        const customPath = parts.slice(2).join("/") + url.search
         const bodyPromise = req.text().catch(() => "")
         return bodyPromise.then(body => {
-          const result = webhookManager.handleRequest(id, req.method, req.url, body)
+          const result = webhookManager.handleRequest(id, secret, customPath, body)
           return new Response(result.body, { status: result.status })
         })
       },
