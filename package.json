@@ -3,7 +3,8 @@
   "module": "index.ts",
   "type": "module",
   "bin": {
-    "fed-workflow": "./index.ts"
+    "fed-workflow": "./index.ts",
+    "fed-workflow-log": "./src/bin/fed-log.ts"
   },
   "scripts": {
     "start": "bun run index.ts"

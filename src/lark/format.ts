@@ -17,8 +17,9 @@ export async function formatMessages(messages: LarkMessage[], userCache: UserCac
     const time = new Date(Number(msg.create_time)).toLocaleString("zh-CN")
     const chatType = msg.chat_type === "p2p" ? "私聊" : "群聊"
     const content = tryParseContent(messages[i]!.event.message.content, messages[i]!.event.message.mentions)
+    const replyLine = msg.parent_id ? `\n- **回复**: \`${msg.parent_id}\`` : ""
     lines.push(`### ${i + 1}. [${time}] ${chatType}
-- **message_id**: \`${msg.message_id}\`
+- **message_id**: \`${msg.message_id}\`${replyLine}
 - **发送者**: ${name}(\`${openId}\`)
 - **内容**: ${content}`)
   }

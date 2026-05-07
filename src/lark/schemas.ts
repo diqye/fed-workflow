@@ -83,6 +83,8 @@ export const larkMessageSchema = z.object({
       message_type: z.string(),
       update_time: z.string(),
       mentions: z.array(larkMentionSchema).optional(),
+      parent_id: z.string().optional(),
+      root_id: z.string().optional(),
     }),
     sender: z.object({
       sender_id: z.object({
