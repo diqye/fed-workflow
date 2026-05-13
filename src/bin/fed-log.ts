@@ -24,7 +24,7 @@ const [live_file,live_path] = live_file_info
 
 
 let last_size = live_file.size
-const tail_size = Math.max(last_size - 1000,0)
+const tail_size = Math.max(last_size - 1000 * 10,0)
 
 const writer = Bun.stdout.writer()
 
