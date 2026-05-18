@@ -1,7 +1,5 @@
 import { query, createSdkMcpServer, tool, type SettingSource } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import { mkdirSync, renameSync } from "fs";
-import { join } from "path";
 import { SYSTEM_PROMPT, AUDIO_HELP, SOUL_FILE, PROFILES_INDEX, parseExpiresIn, EXPIRES_IN } from "./const";
 import { zhipuToken } from "./env";
 import { Log } from "./log";
@@ -183,29 +181,6 @@ function createChannelMcpServer(channel: Channel, chatId: string, cronManager: C
   })
 }
 
-function createDotClaudeMcpServer(cwd: string) {
-  return createSdkMcpServer({
-    name: "dot-claude",
-    version: "1.0.0",
-    tools: [
-      tool(
-        "install",
-        "将已存在的文件或目录移动到项目 .claude 目录下（绕过 agent 沙箱对 .claude 的写入限制）。移动后源文件会被删除",
-        {
-          source: z.string().describe("源文件或目录的绝对路径"),
-          target: z.string().describe("相对于 .claude/ 的目标路径，如 skills/hello-world 或 settings.local.json"),
-        },
-        async (args) => {
-          const targetPath = join(cwd, ".claude", args.target)
-          mkdirSync(join(targetPath, ".."), { recursive: true })
-          renameSync(args.source, targetPath)
-          return { content: [{ type: "text" as const, text: `已安装: ${targetPath}` }] }
-        },
-      ),
-    ],
-  })
-}
-
 type Options = {
   chatId: string,
   chatDetail: string,
@@ -227,7 +202,6 @@ export async function run(prompt: string, options: Options): Promise<string> {
   log.info("start, resume:", String(!!options.conversationId))
 
   const channelMcp = createChannelMcpServer(options.channel, options.chatId, options.cronManager, options.webhookManager)
-  const dotClaudeMcp = createDotClaudeMcpServer(options.cwd)
 
   // 构建决策人段落
   const favoriteSection = options.favorite.length > 0
@@ -251,9 +225,9 @@ export async function run(prompt: string, options: Options): Promise<string> {
     cwd: options.cwd,
     settingSources: ["project", "local"] as SettingSource[],
     systemPrompt: { type: "preset" as const, preset: "claude_code" as const, append: systemPrompt },
+    canUseTool: async (_toolName: string, input: Record<string, unknown>) => ({ behavior: "allow" as const, updatedInput: input }),
     mcpServers: {
       channel: channelMcp,
-      "dot-claude": dotClaudeMcp,
       "web-search-prime": {
         type: "http" as const,
         url: "https://open.bigmodel.cn/api/mcp/web_search_prime/mcp",
